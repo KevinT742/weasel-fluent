@@ -97,7 +97,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\fetch_rime.ps1
 # 3. 编译 Release 版本（rime.dll 与 data/ 会自动就位到输出目录）
 xmake build
 
-# 4. 运行全部自检（路径红线 / rime-ice 残留 / 许可证 / 14 项单元集成测试）
+# 4. 运行全部自检（路径红线 / 词库残留 / 许可证 / 14 项单元集成测试）
 powershell -ExecutionPolicy Bypass -File .\scripts\run-selfchecks.ps1
 
 # 5. 运行性能基准测试
