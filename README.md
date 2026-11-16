@@ -4,7 +4,7 @@
 [![GUI](https://img.shields.io/badge/Qt-6.8%2B-green.svg)](https://www.qt.io/)
 [![Build](https://img.shields.io/badge/Build-xmake-red.svg)](https://xmake.io/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2011%20x64-0078D7.svg)](https://www.microsoft.com/windows)
-[![License](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPLv3-brightgreen.svg)](LICENSE)
 
 基于 **C++17** 与 **Qt6 / Fluent-Qt** 深度构建的全新 Windows 11 Fluent 2 / WinUI 3 风格现代输入法前端与独立服务。
 
@@ -128,4 +128,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package_dist.ps1
 
 ## 许可证 (License)
 
-本项目基于 [MIT License](LICENSE) 开源发布。
+本项目基于 [GNU GPL v3](LICENSE) 开源发布 —— 因为内置了官方 Weasel（GPLv3）的输入法内核源码，衍生作品必须沿用 GPLv3。第三方组件清单见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

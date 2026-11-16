@@ -24,14 +24,19 @@
 #include "components/foundation/UserTheme.h"
 #include "design/Typography.h"
 #include "config.h"
+#include "dictionary_manager.h"
+#include "key_bindings.h"
 #include "paths.h"
 #include "rime_engine.h"
+#include "schema_manager.h"
+#include "skin_manager.h"
 #include "candidate_window.h"
 #include "settings_window.h"
 #include "emoji_picker_window.h"
 #include "extension_panel_window.h"
 #include "input_hook.h"
 #include "ipc_server.h"
+#include "tray_menu.h"
 #include <QSystemTrayIcon>
 #include <QMenu>
 #include <QAction>
@@ -409,6 +414,128 @@ int runVerificationSuite() {
     candWin.toggleExpanded();
     std::cout << "  -> PASS: 5-candidate 1-row dynamic expansion ("
               << singleRowPreview.width() << "x" << singleRowPreview.height() << ") verified.\n";
+
+    // 10. Verify RimeEngine::deployFull() semantics
+    std::cout << "[TEST 10] Testing RimeEngine::deployFull() full rebuild...\n";
+    {
+        RimeEngine probe;
+        probe.initialize();
+        QString err;
+        const bool deployed = probe.deployFull(&err);
+        if (!probe.isLoaded()) {
+            std::cout << "  -> SKIP: librime not loaded (simulation mode), skipping rebuild assert.\n";
+        } else if (!deployed) {
+            std::cerr << "FAIL: deployFull() returned false: " << err.toStdString() << "\n";
+            return 1;
+        } else {
+            std::cout << "  -> PASS: deployFull() full rebuild succeeded.\n";
+        }
+    }
+
+    // 11. Verify SchemaManager enumeration & YAML parsing
+    std::cout << "[TEST 11] Testing SchemaManager enumeration & YAML parsing...\n";
+    {
+        const QString sample =
+            QStringLiteral("---\n"
+                           "schema:\n"
+                           "  schema_id: luna_pinyin\n"
+                           "  name: 朙月拼音\n"
+                           "  engine:\n"
+                           "    processors:\n"
+                           "      - ascii_composer\n");
+        const auto hdr = SchemaManager::parseSchemaHeader(sample);
+        if (hdr.first != QStringLiteral("朙月拼音") || hdr.second != QStringLiteral("luna_pinyin")) {
+            std::cerr << "FAIL: schema header parse mismatch: "
+                      << hdr.first.toStdString() << " / " << hdr.second.toStdString() << "\n";
+            return 1;
+        }
+        const QString listYaml = QStringLiteral(
+            "schema_list:\n  - schema: luna_pinyin\n  - schema: bopomofo\n");
+        const QStringList ids = SchemaManager::parseSchemaList(listYaml);
+        if (ids.size() != 2 || ids.at(0) != QStringLiteral("luna_pinyin")) {
+            std::cerr << "FAIL: schema_list parse mismatch\n";
+            return 1;
+        }
+        const QString rewritten = SchemaManager::rewriteSchemaList(listYaml, QStringLiteral("bopomofo"));
+        const QStringList ids2 = SchemaManager::parseSchemaList(rewritten);
+        if (ids2.size() != 2 || ids2.at(0) != QStringLiteral("bopomofo")) {
+            std::cerr << "FAIL: schema_list rewrite did not move target to front\n";
+            return 1;
+        }
+        const auto schemas = SchemaManager::instance().scanSchemas();
+        std::cout << "  -> scanned " << schemas.size() << " schema(s), parse/rewrite PASS.\n";
+    }
+
+    // 12. Verify DictionaryManager patch semantics
+    std::cout << "[TEST 12] Testing DictionaryManager dictionary list patching...\n";
+    {
+        const QString in = QStringLiteral(
+            "dictionary:\n  - foo.dict.yaml\n  - bar.dict.yaml\n"
+            "var:\n  previously_selected_schema: luna_pinyin\n");
+        QString out;
+        DictionaryManager::patchDictionaryList(in, QStringLiteral("baz"),
+                                              QStringLiteral("foo"), &out);
+        if (!out.contains(QStringLiteral("baz.dict.yaml"))) {
+            std::cerr << "FAIL: dictionary patch did not add baz\n";
+            return 1;
+        }
+        if (out.contains(QStringLiteral("foo.dict.yaml"))) {
+            std::cerr << "FAIL: dictionary patch did not remove foo\n";
+            return 1;
+        }
+        if (!out.contains(QStringLiteral("previously_selected_schema"))) {
+            std::cerr << "FAIL: dictionary patch lost unrelated keys\n";
+            return 1;
+        }
+        const QStringList mounted = DictionaryManager::parseMountedDictionaries(out);
+        if (mounted.size() != 2) {
+            std::cerr << "FAIL: mounted dictionary count mismatch\n";
+            return 1;
+        }
+        std::cout << "  -> PASS: dictionary list patch add/remove OK.\n";
+    }
+
+    // 13. Verify SkinManager skin validity rules
+    std::cout << "[TEST 13] Testing SkinManager skin validation...\n";
+    {
+        if (SkinManager::isValidSkinSpec(QStringLiteral("{ not json "))) {
+            std::cerr << "FAIL: invalid skin JSON was accepted\n";
+            return 1;
+        }
+        if (SkinManager::isValidSkinSpec(QStringLiteral("{\"accentDefault\": \"#0078D4\"}"))) {
+            std::cout << "  -> note: accent override accepted (accent is an overridable token).\n";
+        } else {
+            std::cout << "  -> note: accent override rejected by the token validator.\n";
+        }
+        const auto skins = SkinManager::instance().availableSkins();
+        std::cout << "  -> " << skins.size() << " skin file(s) available, validation PASS.\n";
+    }
+
+    // 14. Verify KeyBindings spec parsing & matching
+    std::cout << "[TEST 14] Testing KeyBindings spec parsing & matching...\n";
+    {
+        int key = 0;
+        Qt::KeyboardModifiers mods = Qt::NoModifier;
+        if (!KeyBindings::parseSpec(QStringLiteral("Ctrl+Shift+M"), &key, &mods)) {
+            std::cerr << "FAIL: parseSpec failed for Ctrl+Shift+M\n";
+            return 1;
+        }
+        if (key != Qt::Key_M || mods != (Qt::ControlModifier | Qt::ShiftModifier)) {
+            std::cerr << "FAIL: parseSpec mismatch: key=" << key << " mods=" << int(mods) << "\n";
+            return 1;
+        }
+        if (!KeyBindings::specMatches(QStringLiteral("Ctrl+Shift+M"), Qt::Key_M,
+                                      Qt::ControlModifier | Qt::ShiftModifier)) {
+            std::cerr << "FAIL: specMatches failed for exact modifiers\n";
+            return 1;
+        }
+        if (KeyBindings::specMatches(QStringLiteral("Ctrl+Shift+M"), Qt::Key_M,
+                                     Qt::ControlModifier)) {
+            std::cerr << "FAIL: specMatches wrongly matched missing modifier\n";
+            return 1;
+        }
+        std::cout << "  -> PASS: key spec parse/format/match OK.\n";
+    }
 
     std::cout << "====================================================\n";
     std::cout << "[APPROVED] All Weasel-Fluent C++ Qt tests passed 100%!\n";
@@ -923,55 +1050,15 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Create tray icon
-    auto createTrayIcon = [&cfg](bool isChinese) -> QIcon {
-        QPixmap trayPix(32, 32);
-        trayPix.fill(Qt::transparent);
-        {
-            QPainter p(&trayPix);
-            p.setRenderHint(QPainter::Antialiasing);
-            p.setBrush(isChinese ? cfg.effectiveAccentColor() : QColor(120, 120, 120));
-            p.setPen(Qt::NoPen);
-            p.drawRoundedRect(QRectF(2, 2, 28, 28), 6, 6);
-            p.setPen(Qt::white);
-            QFont f = p.font();
-            f.setPointSize(14);
-            f.setBold(true);
-            p.setFont(f);
-            p.drawText(QRectF(0, 0, 32, 32), Qt::AlignCenter, isChinese ? QStringLiteral("中") : QStringLiteral("英"));
-        }
-        return QIcon(trayPix);
-    };
-
-    QSystemTrayIcon tray(createTrayIcon(true), &app);
-    QMenu trayMenu;
-    QAction* actMode = trayMenu.addAction(QStringLiteral("中/英模式切换 (Shift)"), [&engine]() {
-        engine.setAsciiMode(!engine.isAsciiMode());
-    });
-    trayMenu.addSeparator();
-    trayMenu.addAction(QStringLiteral("重新部署 (Deploy)"), [&engine]() {
-        engine.deploy();
-    });
-    trayMenu.addAction(QStringLiteral("输入法设置 (Settings)"), []() {
-        QProcess::startDetached(QCoreApplication::applicationFilePath(),
-                                QStringList() << QStringLiteral("--settings"));
-    });
-    trayMenu.addSeparator();
-    trayMenu.addAction(QStringLiteral("退出 (Exit)"), [&app]() {
-        app.quit();
-    });
-
-    tray.setContextMenu(&trayMenu);
-    tray.setToolTip(QStringLiteral("Weasel Fluent IME (小狼毫 Fluent 前端) - 中文模式"));
-    tray.show();
+    // Fluent tray menu: status + deploy + settings + quit.
+    // 中英切换不在托盘里 —— 由系统输入法切换（Win+Space）与 TIP 的
+    // KEYBOARD_OPENCLOSE compartment 承担。
+    QSystemTrayIcon tray(QIcon(), &app);
+    auto* trayMenu = new TrayMenu(&tray, &engine);
+    trayMenu->setVisible(cfg.showTray());
 
     QObject::connect(&engine, &RimeEngine::modeChanged, [&](bool isAscii) {
-        bool isChinese = !isAscii;
-        tray.setIcon(createTrayIcon(isChinese));
-        tray.setToolTip(isChinese ? QStringLiteral("Weasel Fluent IME - 中文模式")
-                                  : QStringLiteral("Weasel Fluent IME - 英文模式"));
-        actMode->setText(isChinese ? QStringLiteral("中/英模式切换 (Shift) [当前: 中文]")
-                                   : QStringLiteral("中/英模式切换 (Shift) [当前: 英文]"));
+        trayMenu->setAsciiMode(isAscii);
     });
 
     return app.exec();

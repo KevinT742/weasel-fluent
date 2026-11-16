@@ -331,6 +331,27 @@ bool RimeEngine::deploy() {
     return true;
 }
 
+bool RimeEngine::deployFull(QString* error) {
+    if (!m_isLoaded || !m_fnStartMaintenance || !m_fnJoinMaintenanceThread) {
+        if (error) *error = QStringLiteral("Rime 引擎未加载，无法执行全量部署");
+        return false;
+    }
+    // RimeMaintenanceTypeFullDeploy = 1
+    const int ret = m_fnStartMaintenance(1);
+    if (ret == 0) {
+        if (error) *error = QStringLiteral("Rime 拒绝了全量部署请求");
+        return false;
+    }
+    m_fnJoinMaintenanceThread();
+
+    // 重新部署后当前会话的方案引用可能失效，重新选中一次以保持一致。
+    if (m_sessionId && m_fnSelectSchema && !m_currentSchema.isEmpty()) {
+        m_fnSelectSchema(m_sessionId, m_currentSchema.toUtf8().constData());
+    }
+    updateState();
+    return true;
+}
+
 void RimeEngine::updateState() {
     QString commitText = getCommitText();
     if (!commitText.isEmpty()) {

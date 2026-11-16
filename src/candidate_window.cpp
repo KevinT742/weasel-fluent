@@ -3,6 +3,8 @@
 #include "extension_panel_window.h"
 
 #include "paths.h"
+#include "key_bindings.h"
+#include "ui_glyph_icon.h"
 
 #include <QApplication>
 #include <QPainter>
@@ -82,27 +84,6 @@ void playMechanicalClickSound() {}
 #endif
 
 namespace {
-
-QIcon createFluentMenuIcon(const QString& glyph, const QColor& color) {
-    QIcon icon;
-    for (int size : {16, 20, 24}) {
-        QPixmap pm(size * 2, size * 2);
-        pm.setDevicePixelRatio(2.0);
-        pm.fill(Qt::transparent);
-        {
-            QPainter p(&pm);
-            p.setRenderHint(QPainter::TextAntialiasing);
-            p.setPen(color);
-            Typography::Icons::paintGlyph(p, QRectF(0, 0, size, size), glyph, size, Qt::AlignCenter);
-        }
-        icon.addPixmap(pm, QIcon::Normal, QIcon::Off);
-        icon.addPixmap(pm, QIcon::Active, QIcon::Off);
-        icon.addPixmap(pm, QIcon::Selected, QIcon::Off);
-        icon.addPixmap(pm, QIcon::Normal, QIcon::On);
-        icon.addPixmap(pm, QIcon::Active, QIcon::On);
-    }
-    return icon;
-}
 
 QPixmap createMicaGrainTile(qreal dpr) {
     const int ratioKey = qRound((dpr > 0.0 ? dpr : 1.0) * 4.0);
@@ -1856,7 +1837,8 @@ void CandidateWindow::keyPressEvent(QKeyEvent* event) {
 
     if (!m_engine) return;
 
-    if (event->key() == Qt::Key_Tab) {
+    if (KeyBindings::specMatches(KeyBindings::instance().binding(
+            QString::fromLatin1(KeyActions::ExpandMatrix)), event->key(), event->modifiers())) {
         toggleExpanded();
         return;
     }
@@ -1876,7 +1858,17 @@ void CandidateWindow::keyPressEvent(QKeyEvent* event) {
         m_engine->processKey(RIME_KEY_PAGE_UP);
     } else if (event->key() == Qt::Key_PageDown) {
         m_engine->processKey(RIME_KEY_PAGE_DOWN);
-    } else if (event->key() == Qt::Key_Space) {
+    } else if (KeyBindings::specMatches(KeyBindings::instance().binding(
+                   QString::fromLatin1(KeyActions::PagePrev)),
+               event->key(), event->modifiers())) {
+        m_engine->processKey(RIME_KEY_PAGE_UP);
+    } else if (KeyBindings::specMatches(KeyBindings::instance().binding(
+                   QString::fromLatin1(KeyActions::PageNext)),
+               event->key(), event->modifiers())) {
+        m_engine->processKey(RIME_KEY_PAGE_DOWN);
+    } else if (KeyBindings::specMatches(KeyBindings::instance().binding(
+                   QString::fromLatin1(KeyActions::Commit)),
+               event->key(), event->modifiers())) {
         m_engine->processKey(RIME_KEY_SPACE);
         if (m_isExpanded) {
             m_isExpanded = false;

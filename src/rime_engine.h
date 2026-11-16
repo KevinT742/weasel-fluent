@@ -60,6 +60,11 @@ public:
 
     bool deploy();
 
+    /// 全量重建：RimeStartMaintenance(RimeMaintenanceTypeFullDeploy) + JoinMaintenanceThread。
+    /// 与 deploy() 的区别：deploy() 只重载已编译产物（不重编译词库），
+    /// deployFull() 会真正重新编译方案与词库。
+    bool deployFull(QString* error = nullptr);
+
     bool isAsciiMode() const { return m_asciiMode; }
     void setAsciiMode(bool ascii);
 

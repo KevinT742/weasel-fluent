@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QString>
 #include <QColor>
+#include <QHash>
 #include <QJsonObject>
 
 class QFileSystemWatcher;
@@ -26,6 +27,8 @@ class AppConfig : public QObject {
     Q_PROPERTY(QString pageKeys READ pageKeys WRITE setPageKeys NOTIFY configChanged)
     Q_PROPERTY(QString schema READ schema WRITE setSchema NOTIFY configChanged)
     Q_PROPERTY(bool cjkSpacing READ cjkSpacing WRITE setCjkSpacing NOTIFY configChanged)
+    Q_PROPERTY(QHash<QString,QString> keyBindings READ keyBindings WRITE setKeyBindings NOTIFY configChanged)
+    Q_PROPERTY(bool showTray READ showTray WRITE setShowTray NOTIFY configChanged)
 
 public:
     static AppConfig& instance();
@@ -81,6 +84,12 @@ public:
     bool cjkSpacing() const { return m_cjkSpacing; }
     void setCjkSpacing(bool v);
 
+    QHash<QString, QString> keyBindings() const { return m_keyBindings; }
+    void setKeyBindings(const QHash<QString, QString>& v);
+
+    bool showTray() const { return m_showTray; }
+    void setShowTray(bool v);
+
     QString configPath() const;
 
     // Automatic Windows System Theme & Accent Color detection
@@ -116,6 +125,8 @@ private:
     QString m_pageKeys = QStringLiteral("comma_period");
     QString m_schema = QStringLiteral("luna_pinyin");
     bool m_cjkSpacing = false;
+    QHash<QString, QString> m_keyBindings;
+    bool m_showTray = true;
 
     mutable QString m_customPath;
     mutable bool m_isSaving = false;

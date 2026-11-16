@@ -71,7 +71,9 @@ QString sharedDataDir() {
 }
 
 QString userDataDir() {
-    QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    // Rime 的约定是 %APPDATA%\Rime。GenericDataLocation 在 Windows 上正好是
+    // Roaming 目录（%APPDATA%），不受 applicationName / organization 影响。
+    QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
     if (base.isEmpty()) {
         base = QDir::homePath() + QStringLiteral("/AppData/Roaming");
     }

@@ -1,9 +1,15 @@
 #include "settings_window.h"
 
+#include "dictionary_manager.h"
+#include "hotkey_capture_dialog.h"
+#include "key_bindings.h"
 #include "paths.h"
+#include "schema_manager.h"
+#include "skin_manager.h"
 
 #include <QApplication>
 #include <QDesktopServices>
+#include <QFileDialog>
 #include <QUrl>
 #include <QPainter>
 #include <QPainterPath>
@@ -1278,6 +1284,65 @@ QWidget* SettingsWindow::createPersonalizationPage() {
         QStringLiteral("用于指示候选选中高亮与左侧药丸竖条的品牌强调色"),
         m_comboAccent, QColor(171, 71, 188), container));
 
+    // 9. 自定义皮肤
+    m_comboSkin = new fluent::basicinput::ComboBox();
+    m_comboSkin->setFixedWidth(230);
+    refreshSkinList();
+    connect(m_comboSkin, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &SettingsWindow::onSkinChanged);
+
+    m_btnImportSkin = new fluent::basicinput::Button(QStringLiteral("导入皮肤"));
+    m_btnImportSkin->setFluentStyle(fluent::basicinput::Button::Accent);
+    connect(m_btnImportSkin, &fluent::basicinput::Button::clicked, this, [this]() {
+        const QString path = QFileDialog::getOpenFileName(
+            this, QStringLiteral("选择皮肤文件"), QString(),
+            QStringLiteral("皮肤文件 (*.json);;所有文件 (*.*)"));
+        if (path.isEmpty()) {
+            return;
+        }
+        QString error;
+        if (!SkinManager::instance().importSkin(path, &error)) {
+            if (m_lblSkinStatus) m_lblSkinStatus->setText(error);
+            return;
+        }
+        refreshSkinList();
+        applyThemeAndBackdrop();
+        if (m_lblSkinStatus) m_lblSkinStatus->setText(QStringLiteral("皮肤已应用"));
+    });
+
+    m_btnExportSkin = new fluent::basicinput::Button(QStringLiteral("导出模板"));
+    m_btnExportSkin->setFluentStyle(fluent::basicinput::Button::Standard);
+    connect(m_btnExportSkin, &fluent::basicinput::Button::clicked, this, [this]() {
+        QString error;
+        const QString name = QStringLiteral("my-skin.json");
+        if (!SkinManager::instance().exportSkin(name, true, &error)) {
+            if (m_lblSkinStatus) m_lblSkinStatus->setText(error);
+            return;
+        }
+        if (m_lblSkinStatus) {
+            m_lblSkinStatus->setText(QStringLiteral("模板已导出：%1").arg(name));
+        }
+    });
+
+    auto* skinBox = new QWidget();
+    auto* skinLayout = new QHBoxLayout(skinBox);
+    skinLayout->setContentsMargins(0, 0, 0, 0);
+    skinLayout->setSpacing(8);
+    skinLayout->addWidget(m_comboSkin);
+    skinLayout->addWidget(m_btnImportSkin);
+    skinLayout->addWidget(m_btnExportSkin);
+
+    m_lblSkinStatus = new fluent::textfields::Label(QString());
+    m_lblSkinStatus->setFluentTypography(Typography::FontRole::Caption);
+    m_lblSkinStatus->setTextColorRole(fluent::textfields::Label::TextColorRole::Secondary);
+
+    layout->addWidget(new SettingsCard(
+        Typography::Icons::Brush,
+        QStringLiteral("自定义皮肤"),
+        QStringLiteral("导入 Fluent token 覆盖文件，立即改变候选窗与设置中心的配色"),
+        skinBox, QColor(171, 71, 188), container));
+    layout->addWidget(m_lblSkinStatus);
+
     layout->addStretch(1);
     scroll->setWidget(container);
     return scroll;
@@ -1394,6 +1459,51 @@ QWidget* SettingsWindow::createInputPage() {
         QStringLiteral("在汉字与英文字符/数字之间输入时自动追加微距空格，使排版更工整"),
         m_switchCjkSpacing, QColor(16, 124, 65), container));
 
+    // 自定义快捷键
+    auto* keyListBox = new QWidget();
+    auto* keyListLayout = new QVBoxLayout(keyListBox);
+    keyListLayout->setContentsMargins(0, 0, 0, 0);
+    keyListLayout->setSpacing(6);
+
+    for (const QString& action : KeyBindings::instance().actions()) {
+        auto* row = new QWidget(keyListBox);
+        auto* rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(12);
+
+        auto* name = new fluent::textfields::Label(
+            KeyBindings::instance().humanName(action), row);
+        name->setFluentTypography(Typography::FontRole::Body);
+        name->setTextColorRole(fluent::textfields::Label::TextColorRole::Primary);
+
+        auto* value = new fluent::textfields::Label(QStringLiteral("…"), row);
+        value->setFluentTypography(Typography::FontRole::Body);
+        value->setTextColorRole(fluent::textfields::Label::TextColorRole::Secondary);
+        m_bindingLabels.insert(action, value);
+
+        auto* capture = new fluent::basicinput::Button(QStringLiteral("录制"), row);
+        capture->setFluentStyle(fluent::basicinput::Button::Standard);
+        connect(capture, &fluent::basicinput::Button::clicked, this, [this, action, value]() {
+            HotkeyCaptureDialog dlg(KeyBindings::instance().binding(action), this);
+            if (dlg.exec() == QDialog::Accepted) {
+                KeyBindings::instance().setBinding(action, dlg.capturedSpec());
+                value->setText(dlg.capturedSpec().isEmpty()
+                                   ? QStringLiteral("（未绑定）") : dlg.capturedSpec());
+            }
+        });
+
+        rowLayout->addWidget(name, 1);
+        rowLayout->addWidget(value);
+        rowLayout->addWidget(capture);
+        keyListLayout->addWidget(row);
+    }
+
+    layout->addWidget(new SettingsCard(
+        Typography::Icons::Keyboard,
+        QStringLiteral("自定义快捷键"),
+        QStringLiteral("点击「录制」后按下新的组合键，立即生效并写入 config.json"),
+        keyListBox, QColor(0, 164, 239), container));
+
     layout->addStretch(1);
     scroll->setWidget(container);
     return scroll;
@@ -1448,6 +1558,67 @@ QWidget* SettingsWindow::createMaintenancePage() {
         QStringLiteral("词库位于 %1").arg(WeaselPaths::userDataDir()),
         btnOpenDict, QColor(16, 124, 65), container));
 
+    // 自定义词库导入 / 移除
+    m_lblDictList = new fluent::textfields::Label(QStringLiteral("（未导入自定义词库）"));
+    m_lblDictList->setFluentTypography(Typography::FontRole::Caption);
+    m_lblDictList->setTextColorRole(fluent::textfields::Label::TextColorRole::Secondary);
+
+    m_btnImportDict = new fluent::basicinput::Button(QStringLiteral("导入词库"));
+    m_btnImportDict->setFluentStyle(fluent::basicinput::Button::Accent);
+    connect(m_btnImportDict, &fluent::basicinput::Button::clicked, this, [this]() {
+        const QString path = QFileDialog::getOpenFileName(
+            this, QStringLiteral("选择词库文件"), QString(),
+            QStringLiteral("词库文件 (*.dict *.dict.yaml);;所有文件 (*.*)"));
+        if (path.isEmpty()) {
+            return;
+        }
+        QString error;
+        if (!DictionaryManager::instance().importDictionary(path, &error)) {
+            m_lblDictList->setText(error);
+            return;
+        }
+        refreshDictionaryList();
+        if (m_engine) {
+            QString deployError;
+            m_engine->deployFull(&deployError);
+        }
+        m_lblDictList->setText(QStringLiteral("已导入并重新部署"));
+    });
+
+    m_btnRemoveDict = new fluent::basicinput::Button(QStringLiteral("移除词库"));
+    m_btnRemoveDict->setFluentStyle(fluent::basicinput::Button::Standard);
+    connect(m_btnRemoveDict, &fluent::basicinput::Button::clicked, this, [this]() {
+        const auto dicts = DictionaryManager::instance().listDictionaries();
+        if (dicts.isEmpty()) {
+            m_lblDictList->setText(QStringLiteral("没有可移除的自定义词库"));
+            return;
+        }
+        QString error;
+        if (!DictionaryManager::instance().removeDictionary(dicts.last().name, &error)) {
+            m_lblDictList->setText(error);
+            return;
+        }
+        refreshDictionaryList();
+        if (m_engine) {
+            QString deployError;
+            m_engine->deployFull(&deployError);
+        }
+    });
+
+    auto* dictBox = new QWidget();
+    auto* dictLayout = new QHBoxLayout(dictBox);
+    dictLayout->setContentsMargins(0, 0, 0, 0);
+    dictLayout->setSpacing(8);
+    dictLayout->addWidget(m_btnImportDict);
+    dictLayout->addWidget(m_btnRemoveDict);
+
+    layout->addWidget(new SettingsCard(
+        Typography::Icons::Document,
+        QStringLiteral("自定义词库"),
+        QStringLiteral("导入 .dict / .dict.yaml 词库，挂载到当前方案并重新编译"),
+        dictBox, QColor(16, 124, 65), container));
+    layout->addWidget(m_lblDictList);
+
     // 3. Deploy
     auto* deployBox = new QWidget();
     revealWindowMaterial(deployBox);
@@ -1472,13 +1643,23 @@ QWidget* SettingsWindow::createMaintenancePage() {
         QStringLiteral("重新编译并加载方案字典与自定义配置 (Rime Deploy)"),
         deployBox, QColor(0, 164, 239), container));
 
-    // 4. Active Schema Card
-    // TODO(Task 5): replaced by a live enumeration of the user's *.schema.yaml files.
+    // 4. Active Schema Card —— 真实枚举用户 Rime 目录下的 *.schema.yaml
     m_comboSchema = new fluent::basicinput::ComboBox();
     m_comboSchema->setFixedWidth(240);
-    m_comboSchema->addItem(QStringLiteral("朙月拼音 · 全拼 (luna_pinyin) [默认]"));
+    refreshSchemaList();
 
-    m_comboSchema->setCurrentIndex(0);
+    m_btnRefreshSchemas = new fluent::basicinput::Button(QStringLiteral("刷新"));
+    m_btnRefreshSchemas->setFluentStyle(fluent::basicinput::Button::Standard);
+    connect(m_btnRefreshSchemas, &fluent::basicinput::Button::clicked, this, [this]() {
+        refreshSchemaList();
+    });
+
+    auto* schemaBox = new QWidget();
+    auto* schemaLayout = new QHBoxLayout(schemaBox);
+    schemaLayout->setContentsMargins(0, 0, 0, 0);
+    schemaLayout->setSpacing(8);
+    schemaLayout->addWidget(m_comboSchema);
+    schemaLayout->addWidget(m_btnRefreshSchemas);
 
     connect(m_comboSchema, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &SettingsWindow::onSchemaChanged);
@@ -1487,7 +1668,7 @@ QWidget* SettingsWindow::createMaintenancePage() {
         Typography::Icons::Document,
         QStringLiteral("输入法方案 (Rime Schema)"),
         QStringLiteral("选择当前生效的输入方案，更改后将自动重新部署"),
-        m_comboSchema, QColor(0, 164, 239), container));
+        schemaBox, QColor(0, 164, 239), container));
 
     // 5. Backup User Dict Card
     auto* backupBox = new QWidget();
@@ -1529,6 +1710,8 @@ QWidget* SettingsWindow::createMaintenancePage() {
         QStringLiteral("Rime 核心组件目录"),
         QStringLiteral("查看 librime 核心库与共享数据所在位置"),
         btnOpenInstallDir, QColor(0, 164, 239), container));
+
+    refreshDictionaryList();
 
     layout->addStretch(1);
     scroll->setWidget(container);
@@ -1707,10 +1890,111 @@ void SettingsWindow::onCjkSpacingToggled(bool on) {
 }
 
 void SettingsWindow::onSchemaChanged(int index) {
-    Q_UNUSED(index);
-    AppConfig::instance().setSchema(QStringLiteral("luna_pinyin"));
+    if (index < 0 || !m_comboSchema) {
+        return;
+    }
+    const auto schemas = SchemaManager::instance().scanSchemas();
+    if (index >= schemas.size()) {
+        return;
+    }
+    const QString schemaId = schemas.at(index).id;
+
+    QString error;
+    if (!SchemaManager::instance().writeSchemaSelection(schemaId, &error)) {
+        if (m_lblDeployStatus) m_lblDeployStatus->setText(error);
+        return;
+    }
+    AppConfig::instance().setSchema(schemaId);
+
+    if (m_engine) {
+        m_engine->selectSchema(schemaId);
+        QString deployError;
+        if (!m_engine->deployFull(&deployError)) {
+            if (m_lblDeployStatus) m_lblDeployStatus->setText(deployError);
+            return;
+        }
+    }
+    if (m_lblDeployStatus) m_lblDeployStatus->setText(QStringLiteral("已切换并重新部署"));
     if (m_heroPreview) m_heroPreview->refresh();
-    onDeployClicked();
+}
+
+void SettingsWindow::onSkinChanged(int index) {
+    if (index <= 0 || !m_comboSkin) {
+        QString error;
+        SkinManager::instance().resetToDefault(&error);
+        applyThemeAndBackdrop();
+        if (m_lblSkinStatus) {
+            m_lblSkinStatus->setText(error.isEmpty() ? QStringLiteral("已恢复默认外观")
+                                                     : error);
+        }
+        return;
+    }
+    const QString fileName = m_comboSkin->itemText(index);
+    QString error;
+    if (!SkinManager::instance().applySkin(fileName, &error)) {
+        if (m_lblSkinStatus) m_lblSkinStatus->setText(error);
+        return;
+    }
+    applyThemeAndBackdrop();
+    if (m_lblSkinStatus) m_lblSkinStatus->setText(QStringLiteral("已应用皮肤：%1").arg(fileName));
+}
+
+void SettingsWindow::refreshSchemaList() {
+    if (!m_comboSchema) {
+        return;
+    }
+    m_comboSchema->blockSignals(true);
+    m_comboSchema->clear();
+
+    const auto schemas = SchemaManager::instance().scanSchemas();
+    const QString current = AppConfig::instance().schema();
+    int currentIndex = -1;
+    for (const auto& s : schemas) {
+        const QString label = s.deployed
+            ? QStringLiteral("%1 (%2)").arg(s.name, s.id)
+            : QStringLiteral("%1 (%2) · 未部署").arg(s.name, s.id);
+        m_comboSchema->addItem(label);
+        if (s.id == current) {
+            currentIndex = m_comboSchema->count() - 1;
+        }
+    }
+    if (currentIndex < 0 && m_comboSchema->count() > 0) {
+        currentIndex = 0;
+    }
+    if (currentIndex >= 0) {
+        m_comboSchema->setCurrentIndex(currentIndex);
+    }
+    m_comboSchema->blockSignals(false);
+}
+
+void SettingsWindow::refreshDictionaryList() {
+    if (!m_lblDictList) {
+        return;
+    }
+    const auto dicts = DictionaryManager::instance().listDictionaries();
+    QStringList names;
+    for (const auto& d : dicts) {
+        if (d.custom) {
+            names << d.name;
+        }
+    }
+    m_lblDictList->setText(names.isEmpty()
+                               ? QStringLiteral("（未导入自定义词库）")
+                               : QStringLiteral("已导入：%1").arg(names.join(QStringLiteral("、"))));
+}
+
+void SettingsWindow::refreshSkinList() {
+    if (!m_comboSkin) {
+        return;
+    }
+    m_comboSkin->blockSignals(true);
+    m_comboSkin->clear();
+    m_comboSkin->addItem(QStringLiteral("默认"));
+    for (const QString& s : SkinManager::instance().availableSkins()) {
+        m_comboSkin->addItem(s);
+    }
+    m_comboSkin->setCurrentIndex(0);
+    m_comboSkin->blockSignals(false);
 }
 
 void SettingsWindow::onBackupDictClicked() {
@@ -1878,12 +2162,12 @@ void SettingsWindow::syncControlsFromConfig() {
     if (m_switchCjkSpacing) {
         m_switchCjkSpacing->setIsOn(cfg.cjkSpacing());
     }
-    if (m_comboSchema) {
-        QString sch = cfg.schema();
-        if (sch == QStringLiteral("zrm")) m_comboSchema->setCurrentIndex(1);
-        else if (sch == QStringLiteral("flypy")) m_comboSchema->setCurrentIndex(2);
-        else if (sch == QStringLiteral("luna_pinyin")) m_comboSchema->setCurrentIndex(3);
-        else m_comboSchema->setCurrentIndex(0);
+    // 方案下拉由真实枚举驱动，不能用固定下标。
+    refreshSchemaList();
+
+    for (auto it = m_bindingLabels.constBegin(); it != m_bindingLabels.constEnd(); ++it) {
+        const QString spec = KeyBindings::instance().binding(it.key());
+        it.value()->setText(spec.isEmpty() ? QStringLiteral("（未绑定）") : spec);
     }
 }
 

@@ -1,5 +1,7 @@
 #include "config.h"
 
+#include "key_bindings.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -124,6 +126,16 @@ void AppConfig::load(const QString& path) {
         m_schema = obj.value(QStringLiteral("schema")).toString(m_schema);
     if (obj.contains(QStringLiteral("cjk_spacing")))
         m_cjkSpacing = obj.value(QStringLiteral("cjk_spacing")).toBool(m_cjkSpacing);
+    if (obj.contains(QStringLiteral("show_tray")))
+        m_showTray = obj.value(QStringLiteral("show_tray")).toBool(true);
+    if (obj.contains(QStringLiteral("key_bindings"))) {
+        const QJsonObject bindings = obj.value(QStringLiteral("key_bindings")).toObject();
+        m_keyBindings.clear();
+        for (auto it = bindings.constBegin(); it != bindings.constEnd(); ++it) {
+            m_keyBindings.insert(it.key(), it.value().toString());
+        }
+        KeyBindings::instance().loadFrom(m_keyBindings);
+    }
 }
 
 bool AppConfig::save(const QString& path) const {
@@ -149,6 +161,14 @@ bool AppConfig::save(const QString& path) const {
     obj[QStringLiteral("page_keys")] = m_pageKeys;
     obj[QStringLiteral("schema")] = m_schema;
     obj[QStringLiteral("cjk_spacing")] = m_cjkSpacing;
+    obj[QStringLiteral("show_tray")] = m_showTray;
+    {
+        QJsonObject bindings;
+        for (auto it = m_keyBindings.constBegin(); it != m_keyBindings.constEnd(); ++it) {
+            bindings.insert(it.key(), it.value());
+        }
+        obj[QStringLiteral("key_bindings")] = bindings;
+    }
 
     QJsonDocument doc(obj);
     QSaveFile saveFile(targetPath);
@@ -388,5 +408,24 @@ void AppConfig::setCjkSpacing(bool v) {
         save();
         emit configChanged();
     }
+}
+
+void AppConfig::setKeyBindings(const QHash<QString, QString>& v) {
+    if (m_keyBindings == v) {
+        return;
+    }
+    m_keyBindings = v;
+    KeyBindings::instance().loadFrom(m_keyBindings);
+    save();
+    emit configChanged();
+}
+
+void AppConfig::setShowTray(bool v) {
+    if (m_showTray == v) {
+        return;
+    }
+    m_showTray = v;
+    save();
+    emit configChanged();
 }
 

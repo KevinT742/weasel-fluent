@@ -6,6 +6,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QVector>
+#include <QHash>
 
 #include "components/windowing/Window.h"
 #include "components/layout/Card.h"
@@ -142,6 +143,7 @@ private slots:
     void onPageKeysChanged(int index);
     void onCjkSpacingToggled(bool on);
     void onSchemaChanged(int index);
+    void onSkinChanged(int index);
     void onBackupDictClicked();
     void onSearchFilterChanged(const QString& query);
     void onDeployClicked();
@@ -153,6 +155,13 @@ private:
     void setupTitleBar();
     void applyThemeAndBackdrop();
     void syncControlsFromConfig();
+
+    /// 重新枚举用户 Rime 目录下的输入方案并刷新下拉框。
+    void refreshSchemaList();
+    /// 刷新已导入自定义词库的显示。
+    void refreshDictionaryList();
+    /// 刷新皮肤下拉框。
+    void refreshSkinList();
 
     QWidget* createNavigationPane();
     QWidget* createPersonalizationPage();
@@ -190,11 +199,26 @@ private:
     fluent::basicinput::ToggleSwitch* m_switchCjkSpacing = nullptr;
 
     fluent::basicinput::ComboBox* m_comboSchema = nullptr;
+    fluent::basicinput::Button* m_btnRefreshSchemas = nullptr;
     fluent::basicinput::Button* m_btnDeploy = nullptr;
     fluent::textfields::Label* m_lblDeployStatus = nullptr;
     fluent::basicinput::Button* m_btnBackupDict = nullptr;
     fluent::textfields::Label* m_lblBackupStatus = nullptr;
     fluent::basicinput::Button* m_btnReset = nullptr;
+
+    // 自定义词库
+    fluent::basicinput::Button* m_btnImportDict = nullptr;
+    fluent::basicinput::Button* m_btnRemoveDict = nullptr;
+    fluent::textfields::Label* m_lblDictList = nullptr;
+
+    // 自定义皮肤
+    fluent::basicinput::ComboBox* m_comboSkin = nullptr;
+    fluent::basicinput::Button* m_btnImportSkin = nullptr;
+    fluent::basicinput::Button* m_btnExportSkin = nullptr;
+    fluent::textfields::Label* m_lblSkinStatus = nullptr;
+
+    // 自定义快捷键
+    QHash<QString, fluent::textfields::Label*> m_bindingLabels;
 
     // Title bar controls
     fluent::basicinput::Button* m_btnBack = nullptr;
