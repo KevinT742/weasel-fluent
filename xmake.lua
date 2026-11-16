@@ -92,6 +92,32 @@ target("weasel-fluent-cpp-qt")
         if os.isfile(targetfile) and os.isdir(release_dir) then
             os.cp(targetfile, path.join(release_dir, "weasel-fluent-cpp-qt.exe"))
         end
+        -- Stage the librime runtime next to the executable so the local build
+        -- behaves like the distribution (real engine instead of simulation).
+        -- Fetched by scripts/fetch_rime.ps1 into deps/.
+        local deps = path.join(os.projectdir(), "deps")
+        local rime_dll = path.join(deps, "rime", "dist", "lib", "rime.dll")
+        for _, stage_dir in ipairs({ target:targetdir(), release_dir }) do
+            if os.isdir(stage_dir) then
+                if os.isfile(rime_dll) then
+                    os.cp(rime_dll, path.join(stage_dir, "rime.dll"))
+                end
+                local data_dir = path.join(stage_dir, "data")
+                if not os.isdir(data_dir) then
+                    os.mkdir(data_dir)
+                end
+                for _, src in ipairs({
+                    path.join(deps, "rime-prelude"),
+                    path.join(deps, "rime-luna-pinyin"),
+                }) do
+                    if os.isdir(src) then
+                        for _, f in ipairs(os.files(path.join(src, "*.yaml"))) do
+                            os.cp(f, path.join(data_dir, path.filename(f)))
+                        end
+                    end
+                end
+            end
+        end
         if os.isfile(targetfile) and os.isdir("dist/weasel-fluent") then
             local dst = "dist/weasel-fluent/weasel-fluent-cpp-qt.exe"
             local old = "dist/weasel-fluent/weasel-fluent-cpp-qt.exe.old"

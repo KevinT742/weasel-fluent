@@ -61,11 +61,13 @@
 
 4. **独立 WinUI Gallery 标准设置中心**：
    - 独立进程唤起，绝不阻塞打字渲染管线；
-   - 弹性滑动选择指示器（Fluid Elastic Indicator），五大分页模块对齐微软官方控件库规范。
+   - 弹性滑动选择指示器（Fluid Elastic Indicator），五大分页模块对齐微软官方控件库规范；
+   - **方案选择、自定义词库、自定义皮肤、自定义快捷键**四项均为真功能，改动会触发真正的全量重新编译。
 
 5. **免安装独立打包发行 (`dist/`)**：
    - 前后端全量预装包内置 64 位 `rime.dll` 与 Rime 基础数据，开箱即用；
-   - 开箱即用，无需配置复杂的系统注册表或管理员提权。
+   - 开箱即用，无需配置复杂的系统注册表或管理员提权；
+   - 托盘只负责「状态 / 部署 / 设置 / 退出」，输入法选择交给系统语言切换（`Win+Space`）。
 
 ---
 
@@ -84,21 +86,48 @@
 
 ```powershell
 # 1. 克隆代码仓库
-git clone https://github.com/bpmstall/weasel-fluent.git
+git clone https://github.com/KevinT742/weasel-fluent.git
 cd weasel-fluent
 
-# 2. 编译 Release 版本
+# 2. 准备构建依赖
+#    - Qt 6.8.2 (msvc2022_64)：xmake 会自动在 C:\Qt\6.8.2 下探测
+#    - librime 运行时与 Rime 基础数据（rime-prelude / rime-luna-pinyin）
+powershell -ExecutionPolicy Bypass -File .\scripts\fetch_rime.ps1
+
+# 3. 编译 Release 版本（rime.dll 与 data/ 会自动就位到输出目录）
 xmake build
 
-# 3. 运行自动化全链路自检验证
-.\build\Release\weasel-fluent-cpp-qt.exe --verify
+# 4. 运行全部自检（路径红线 / rime-ice 残留 / 许可证 / 14 项单元集成测试）
+powershell -ExecutionPolicy Bypass -File .\scripts\run-selfchecks.ps1
 
-# 4. 运行性能基准测试
+# 5. 运行性能基准测试
 .\build\Release\weasel-fluent-cpp-qt.exe --benchmark
 
-# 5. 打包前后端完整发行包
+# 6. 打包前后端完整发行包
 powershell -ExecutionPolicy Bypass -File .\scripts\package_dist.ps1
 ```
+
+> **关于 Boost**：仓库内置了官方 Weasel 的 IPC / 配置层源码（`3rdparty/weasel/`，GPLv3）。
+> 编译这部分需要 Boost 1.88：`powershell -ExecutionPolicy Bypass -File .\scripts\build_boost.ps1`。
+> Round 2 会把它链接进主程序；当前 Round 1 已 vendor 源码并记录上游 commit。
+>
+> **关于词库**：发行包不内置第三方大词库，默认方案为 librime 自带的**朙月拼音**
+> （`luna_pinyin`）。需要更大的词库时，在设置中心「词库与维护 → 自定义词库」里
+> 导入 `.dict` / `.dict.yaml` 即可。
+
+---
+
+## 设置中心能力 (Settings Center)
+
+| 页面 | 能力 |
+| :--- | :--- |
+| 个性化与排版 | 候选窗排版、字体、主题、背景材质、强调色、**自定义皮肤**（Fluent token 覆盖文件导入/导出/复位） |
+| 输入与按键 | 空格上屏、音效、混输空格、**自定义快捷键**（中英切换 / 上屏 / 翻页 / 展开矩阵 / 表情面板 / 扩展面板，逐项录制） |
+| 词库与维护 | Rime 引擎状态、用户词库目录、**自定义词库**（导入 / 移除并重新编译）、**输入法方案选择**（枚举真实 `*.schema.yaml` 并触发全量部署）、词库备份 |
+| 关于与系统 | 版本、技术栈、恢复默认、配置目录 |
+
+**方案切换是真正的重新编译**：`RimeStartMaintenance(RimeMaintenanceTypeFullDeploy)` +
+`JoinMaintenanceThread`，而不是只重载旧产物 —— 改方案或导入词库后会立即生效。
 
 ---
 
@@ -109,9 +138,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package_dist.ps1
 | `(无参数)` | 以系统后台输入法服务模式运行，驻留托盘并接管打字 | `.\weasel-fluent-cpp-qt.exe` |
 | `--settings` / `-s` | 独立打开 WinUI 风格设置中心 | `.\weasel-fluent-cpp-qt.exe --settings` |
 | `--demo` | 静态预览模式（固定呈现“你好”候选条供调试） | `.\weasel-fluent-cpp-qt.exe --demo` |
-| `--verify` | 运行内置 9 项单元与集成全链路测试套件 | `.\weasel-fluent-cpp-qt.exe --verify` |
+| `--verify` | 运行内置 14 项单元与集成全链路测试套件 | `.\weasel-fluent-cpp-qt.exe --verify` |
 | `--benchmark` / `--perf` | 运行平均击键延迟、渲染吞吐与内存分析测试 | `.\weasel-fluent-cpp-qt.exe --benchmark` |
-| `--capture` | 自动捕捉高分辨率候选窗与设置中心全套实物截图 | `.\weasel-fluent-cpp-qt.exe --capture` |
+| `--capture` | 自动捕捉候选窗与设置中心全套实物截图 | `.\weasel-fluent-cpp-qt.exe --capture` |
 | `--theme <mode>` | 强制设置界面主题：`light`, `dark`, 或 `system` | `.\weasel-fluent-cpp-qt.exe --theme dark` |
 
 ---

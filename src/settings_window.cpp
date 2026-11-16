@@ -964,6 +964,9 @@ void SettingsWindow::setupUi() {
 
     setContentWidget(bodyWidget);
 
+    // 页面建好之后再把配置灌进控件（快捷键标签、方案列表等在页面里才存在）。
+    syncControlsFromConfig();
+
     if (m_navPane) {
         m_navPane->setSelectedRow(0);
     }

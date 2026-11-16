@@ -26,6 +26,8 @@ Get-ChildItem -Path $repo -Recurse -Include *.cpp, *.h, *.ps1, *.lua, *.md, *.ya
         $_.FullName -notmatch '[\\/]deps[\\/]' -and
         $_.FullName -notmatch '[\\/]docs[\\/]' -and
         $_.Name -notlike 'verify-*.ps1' -and
+        $_.Name -notlike 'run-selfchecks.ps1' -and
+        $_.Name -notlike '*rime-ice*' -and
         $_.Name -notlike '设计.md'
     } |
     ForEach-Object {

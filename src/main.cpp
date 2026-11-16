@@ -873,11 +873,11 @@ int main(int argc, char* argv[]) {
             app.processEvents();
             QThread::msleep(20);
         }
-        candWin.grab().save(QStringLiteral("cand_win.png"));
+        candWin.grab().save(previewOutputDir() + QStringLiteral("/cand_win.png"));
         if (auto* screen = QGuiApplication::primaryScreen()) {
             QRect g = candWin.geometry();
             screen->grabWindow(0, g.x() - 10, g.y() - 10, g.width() + 20, g.height() + 20)
-                  .save(QStringLiteral("cand_win_screen.png"));
+                  .save(previewOutputDir() + QStringLiteral("/cand_win_screen.png"));
         }
         candWin.hide();
 
@@ -890,7 +890,7 @@ int main(int argc, char* argv[]) {
             app.processEvents();
             QThread::msleep(20);
         }
-        candWin.grab().save(QStringLiteral("cand_win_vertical.png"));
+        candWin.grab().save(previewOutputDir() + QStringLiteral("/cand_win_vertical.png"));
         candWin.hide();
         cfg.setOrientation(QStringLiteral("horizontal")); // restore
         candWin.reloadConfig();
@@ -898,13 +898,13 @@ int main(int argc, char* argv[]) {
         // 3. Emoji Picker Window (All 3 tabs)
         EmojiPickerWindow emojiPicker;
         emojiPicker.setCategory(EmojiPickerWindow::Category::Emoji);
-        emojiPicker.renderPreviewImage(2.0).save(QStringLiteral("emoji_picker.png"));
+        emojiPicker.renderPreviewImage(2.0).save(previewOutputDir() + QStringLiteral("/emoji_picker.png"));
 
         emojiPicker.setCategory(EmojiPickerWindow::Category::Kaomoji);
-        emojiPicker.renderPreviewImage(2.0).save(QStringLiteral("emoji_picker_kaomoji.png"));
+        emojiPicker.renderPreviewImage(2.0).save(previewOutputDir() + QStringLiteral("/emoji_picker_kaomoji.png"));
 
         emojiPicker.setCategory(EmojiPickerWindow::Category::Symbols);
-        emojiPicker.renderPreviewImage(2.0).save(QStringLiteral("emoji_picker_symbols.png"));
+        emojiPicker.renderPreviewImage(2.0).save(previewOutputDir() + QStringLiteral("/emoji_picker_symbols.png"));
 
         // 4. Settings Window
         SettingsWindow settingsWin(&engine);
@@ -917,7 +917,26 @@ int main(int argc, char* argv[]) {
         }
         std::cout << "SettingsWindow geometry: " << settingsWin.geometry().x() << "," << settingsWin.geometry().y() << " " << settingsWin.geometry().width() << "x" << settingsWin.geometry().height() << "\n";
         QPixmap setPix = settingsWin.grab();
-        setPix.save(QStringLiteral("settings_win.png"));
+        setPix.save(previewOutputDir() + QStringLiteral("/settings_win.png"));
+
+        // Capture page 0 scrolled to the bottom (custom skin section lives there)
+        if (auto* page = settingsWin.contentHost()->pageWidget(0)) {
+            QAbstractScrollArea* scroll = qobject_cast<QAbstractScrollArea*>(page);
+            if (!scroll) {
+                scroll = page->findChild<QAbstractScrollArea*>();
+            }
+            if (scroll) {
+                if (auto* bar = scroll->verticalScrollBar()) {
+                    bar->setValue(bar->maximum());
+                    for (int i = 0; i < 20; ++i) {
+                        app.processEvents();
+                        QThread::msleep(20);
+                    }
+                    settingsWin.grab().save(previewOutputDir() + QStringLiteral("/settings_win_skin.png"));
+                    bar->setValue(0);
+                }
+            }
+        }
 
         // Capture page 1: Input & Keys
         settingsWin.selectNavigationRow(1);
@@ -925,7 +944,7 @@ int main(int argc, char* argv[]) {
             app.processEvents();
             QThread::msleep(20);
         }
-        settingsWin.grab().save(QStringLiteral("settings_win_input.png"));
+        settingsWin.grab().save(previewOutputDir() + QStringLiteral("/settings_win_input.png"));
 
         // Capture page 2: Maintenance
         settingsWin.selectNavigationRow(2);
@@ -933,7 +952,7 @@ int main(int argc, char* argv[]) {
             app.processEvents();
             QThread::msleep(20);
         }
-        settingsWin.grab().save(QStringLiteral("settings_win_maintenance.png"));
+        settingsWin.grab().save(previewOutputDir() + QStringLiteral("/settings_win_maintenance.png"));
 
         // Capture page 3: About
         settingsWin.selectNavigationRow(3);
@@ -941,7 +960,7 @@ int main(int argc, char* argv[]) {
             app.processEvents();
             QThread::msleep(20);
         }
-        settingsWin.grab().save(QStringLiteral("settings_win_about.png"));
+        settingsWin.grab().save(previewOutputDir() + QStringLiteral("/settings_win_about.png"));
         settingsWin.hide();
 
         // 5. Candidate Window with Extension Menu Open
@@ -965,7 +984,7 @@ int main(int argc, char* argv[]) {
             p.drawPixmap(16, 16, candPix);
             p.drawPixmap(16, candPix.height() + 24, menuPix);
         }
-        combined.save(QStringLiteral("cand_extension_menu.png"));
+        combined.save(previewOutputDir() + QStringLiteral("/cand_extension_menu.png"));
         extMenu->close();
         delete extMenu;
 
@@ -987,7 +1006,7 @@ int main(int argc, char* argv[]) {
             p.drawPixmap(16, 16, candPix2);
             p.drawPixmap(16, candPix2.height() + 24, panelPix);
         }
-        combined2.save(QStringLiteral("cand_extension_panel.png"));
+        combined2.save(previewOutputDir() + QStringLiteral("/cand_extension_panel.png"));
         candWin.toggleExtensionPanel();
         candWin.hide();
 
