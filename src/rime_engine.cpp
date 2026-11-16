@@ -1,5 +1,7 @@
 #include "rime_engine.h"
 
+#include "paths.h"
+
 #include <QDebug>
 #include <QFileInfo>
 #include <QCoreApplication>
@@ -18,64 +20,45 @@ RimeEngine::~RimeEngine() {
 bool RimeEngine::initialize(const QString& dllPath,
                             const QString& sharedDir,
                             const QString& userDir) {
-    QString appDir = QCoreApplication::applicationDirPath();
-    QString actualDll = dllPath;
-    if (actualDll.isEmpty()) {
-        if (QFileInfo::exists(appDir + QStringLiteral("/rime.dll"))) {
-            actualDll = appDir + QStringLiteral("/rime.dll");
-        } else {
-            actualDll = QStringLiteral("C:/Program Files/Rime/weasel-0.17.4/rime.dll");
+    QString actualDll = dllPath.isEmpty() ? WeaselPaths::rimeDllPath() : dllPath;
+    if (actualDll.isEmpty() || !QFileInfo::exists(actualDll)) {
+        // No librime available -> simulation mode.
+        m_isLoaded = false;
+        return true;
+    }
+
+    m_lib.setFileName(actualDll);
+    if (!m_lib.load() || !initRimeApi()) {
+        m_isLoaded = false;
+        return true;
+    }
+
+    const QString actualShared = sharedDir.isEmpty() ? WeaselPaths::sharedDataDir() : sharedDir;
+    const QString actualUser   = userDir.isEmpty()   ? WeaselPaths::userDataDir()   : userDir;
+
+    m_sharedDirBytes = actualShared.toUtf8();
+    m_userDirBytes = actualUser.toUtf8();
+    m_appNameBytes = "rime.weasel-fluent-cpp-qt";
+
+    RimeTraits traits{};
+    traits.data_size = static_cast<int>(sizeof(RimeTraits) - sizeof(int));
+    traits.shared_data_dir = m_sharedDirBytes.constData();
+    traits.user_data_dir = m_userDirBytes.constData();
+    traits.app_name = m_appNameBytes.constData();
+
+    m_fnSetup(&traits);
+    m_fnInitialize(&traits);
+
+    if (m_fnStartMaintenance && m_fnStartMaintenance(0) != 0) {
+        if (m_fnJoinMaintenanceThread) {
+            m_fnJoinMaintenanceThread();
         }
     }
 
-    if (QFileInfo::exists(actualDll)) {
-        m_lib.setFileName(actualDll);
-        if (m_lib.load() && initRimeApi()) {
-            QString actualShared = sharedDir;
-            if (actualShared.isEmpty()) {
-                QString sysShared = QStringLiteral("C:/Program Files/Rime/weasel-0.17.4/data");
-                if (QFileInfo::exists(sysShared)) {
-                    actualShared = sysShared;
-                } else if (QFileInfo::exists(appDir + QStringLiteral("/data"))) {
-                    actualShared = appDir + QStringLiteral("/data");
-                }
-            }
-
-            QString actualUser = userDir;
-            if (actualUser.isEmpty()) {
-                QString sysUser = QStringLiteral("C:/Users/zheng/AppData/Roaming/Rime");
-                if (QFileInfo::exists(sysUser)) {
-                    actualUser = sysUser;
-                } else if (QFileInfo::exists(appDir + QStringLiteral("/user_dicts"))) {
-                    actualUser = appDir + QStringLiteral("/user_dicts");
-                }
-            }
-
-            m_sharedDirBytes = actualShared.toUtf8();
-            m_userDirBytes = actualUser.toUtf8();
-            m_appNameBytes = "rime.weasel-fluent-cpp-qt";
-
-            RimeTraits traits{};
-            traits.data_size = static_cast<int>(sizeof(RimeTraits) - sizeof(int));
-            traits.shared_data_dir = m_sharedDirBytes.constData();
-            traits.user_data_dir = m_userDirBytes.constData();
-            traits.app_name = m_appNameBytes.constData();
-
-            m_fnSetup(&traits);
-            m_fnInitialize(&traits);
-
-            if (m_fnStartMaintenance && m_fnStartMaintenance(0) != 0) {
-                if (m_fnJoinMaintenanceThread) {
-                    m_fnJoinMaintenanceThread();
-                }
-            }
-
-            m_sessionId = m_fnCreateSession();
-            if (m_sessionId != 0) {
-                m_isLoaded = true;
-                return true;
-            }
-        }
+    m_sessionId = m_fnCreateSession();
+    if (m_sessionId != 0) {
+        m_isLoaded = true;
+        return true;
     }
 
     // Fallback to simulation mode

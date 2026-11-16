@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QDir>
 #include <QProcess>
 #include <QScreen>
 #include <QThread>
@@ -23,6 +24,7 @@
 #include "components/foundation/UserTheme.h"
 #include "design/Typography.h"
 #include "config.h"
+#include "paths.h"
 #include "rime_engine.h"
 #include "candidate_window.h"
 #include "settings_window.h"
@@ -34,6 +36,19 @@
 #include <QMenu>
 #include <QAction>
 #include "components/menus_toolbars/Menu.h"
+
+namespace {
+
+/// 截图输出目录：<可执行文件目录>/preview。
+/// 便于与用户目录、数据目录彻底解耦。
+QString previewOutputDir() {
+    const QString dir = QDir(QCoreApplication::applicationDirPath())
+                           .absoluteFilePath(QStringLiteral("preview"));
+    QDir().mkpath(dir);
+    return dir;
+}
+
+} // namespace
 
 int runVerificationSuite() {
     std::cout << "====================================================\n";
@@ -98,6 +113,12 @@ int runVerificationSuite() {
     }
     std::cout << "  -> Found " << st.candidates.size() << " candidates. First: "
               << st.candidates[0].text.toUtf8().constData() << "\n";
+    std::cout << "     preedit: '" << st.preedit.toUtf8().constData() << "'  loaded="
+              << (engine.isLoaded() ? "yes" : "no(sim)") << "  schema="
+              << engine.currentSchema().toUtf8().constData() << "\n";
+    for (int i = 0; i < qMin(5, st.candidates.size()); ++i) {
+        std::cout << "     [" << i << "] " << st.candidates[i].text.toUtf8().constData() << "\n";
+    }
 
     // Test Down arrow strictly navigates candidate (highlightedIndex goes from 0 to 1)
     engine.processKey(RIME_KEY_DOWN);
@@ -199,7 +220,7 @@ int runVerificationSuite() {
         return 1;
     }
     std::cout << "  -> Vertical Candidate size: " << vertImg.width() << "x" << vertImg.height() << "\n";
-    vertImg.save(QStringLiteral("C:/Users/zheng/.gemini/antigravity/brain/6e0b27be-bcc5-4176-a743-2b4e04662dc0/cand_vertical.png"));
+    vertImg.save(previewOutputDir() + QStringLiteral("/cand_vertical.png"));
     cfg.setOrientation(QStringLiteral("horizontal")); // restore
     candWin.updateUiState(st);
     std::cout << "  -> PASS: CandidateWindow vertical orientation verified.\n";
@@ -307,15 +328,15 @@ int runVerificationSuite() {
                   << panelPreviewSnippets.width() << "x" << panelPreviewSnippets.height() << "\n";
         return 1;
     }
-    panelPreviewSnippets.save(QStringLiteral("C:/Users/zheng/.gemini/antigravity/brain/6e0b27be-bcc5-4176-a743-2b4e04662dc0/cand_extension_snippets.png"));
+    panelPreviewSnippets.save(previewOutputDir() + QStringLiteral("/cand_extension_snippets.png"));
 
     extPanel->setCategory(ExtensionPanelWindow::Category::Tools);
     QImage panelPreviewTools = extPanel->renderPreviewImage(1.0);
-    panelPreviewTools.save(QStringLiteral("C:/Users/zheng/.gemini/antigravity/brain/6e0b27be-bcc5-4176-a743-2b4e04662dc0/cand_extension_tools.png"));
+    panelPreviewTools.save(previewOutputDir() + QStringLiteral("/cand_extension_tools.png"));
 
     extPanel->setCategory(ExtensionPanelWindow::Category::Modes);
     QImage panelPreviewModes = extPanel->renderPreviewImage(1.0);
-    panelPreviewModes.save(QStringLiteral("C:/Users/zheng/.gemini/antigravity/brain/6e0b27be-bcc5-4176-a743-2b4e04662dc0/cand_extension_modes.png"));
+    panelPreviewModes.save(previewOutputDir() + QStringLiteral("/cand_extension_modes.png"));
 
     // Verify generators
     QString pwd = ExtensionPanelWindow::generateRandomPassword(16);
@@ -363,7 +384,7 @@ int runVerificationSuite() {
                   << ", expected height: " << candWin.height() << "\n";
         return 1;
     }
-    expPreview.save(QStringLiteral("C:/Users/zheng/.gemini/antigravity/brain/6e0b27be-bcc5-4176-a743-2b4e04662dc0/cand_matrix_expanded.png"));
+    expPreview.save(previewOutputDir() + QStringLiteral("/cand_matrix_expanded.png"));
     candWin.toggleExpanded(); // Restore collapsed state
     if (candWin.isExpanded()) {
         std::cerr << "FAIL: CandidateWindow failed to collapse back!\n";
@@ -384,7 +405,7 @@ int runVerificationSuite() {
     candWin.setPreviewState(singleRowState);
     candWin.toggleExpanded();
     QImage singleRowPreview = candWin.renderPreviewImage(1.0);
-    singleRowPreview.save(QStringLiteral("C:/Users/zheng/.gemini/antigravity/brain/6e0b27be-bcc5-4176-a743-2b4e04662dc0/cand_matrix_expanded_1row.png"));
+    singleRowPreview.save(previewOutputDir() + QStringLiteral("/cand_matrix_expanded_1row.png"));
     candWin.toggleExpanded();
     std::cout << "  -> PASS: 5-candidate 1-row dynamic expansion ("
               << singleRowPreview.width() << "x" << singleRowPreview.height() << ") verified.\n";

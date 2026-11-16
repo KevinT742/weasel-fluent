@@ -1,4 +1,4 @@
-# Clean restoration script for Weasel-Fluent
+﻿# Clean restoration script for Weasel-Fluent
 $ErrorActionPreference = "SilentlyContinue"
 
 Write-Host "==========================================================" -ForegroundColor Cyan
@@ -12,7 +12,8 @@ Stop-Process -Name "WeaselServer" -Force
 
 # 2. 反注册 TSF COM DLL
 Write-Host "[2/5] 反注册 weasel-fluent-tsf.dll..." -ForegroundColor Yellow
-$dllPath = "C:\Users\zheng\.gemini\antigravity\scratch\weasel-fluent-cpp-qt\dist\weasel-fluent\weasel-fluent-tsf.dll"
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$dllPath = Join-Path $RepoRoot "dist\weasel-fluent\weasel-fluent-tsf.dll"
 if (Test-Path $dllPath) {
     Start-Process regsvr32.exe -ArgumentList "/u /s `"$dllPath`"" -Verb RunAs -Wait
 }

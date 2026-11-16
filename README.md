@@ -8,7 +8,7 @@
 
 基于 **C++17** 与 **Qt6 / Fluent-Qt** 深度构建的全新 Windows 11 Fluent 2 / WinUI 3 风格现代输入法前端与独立服务。
 
-深度挂接 Librime 64 位核心引擎（`rime.dll`）与全套雾凇拼音词库（`rime-ice`），彻底解决原版小狼毫界面老旧、高分屏模糊、容易假死与无法自适应 Win11 原生亚克力磨砂质感的历史痛点。
+深度挂接 Librime 64 位核心引擎（`rime.dll`）与 Windows 11 TSF 系统输入法架构，彻底解决原版小狼毫界面老旧、高分屏模糊、容易假死与无法自适应 Win11 原生亚克力磨砂质感的历史痛点。
 
 ---
 
@@ -64,7 +64,7 @@
    - 弹性滑动选择指示器（Fluid Elastic Indicator），五大分页模块对齐微软官方控件库规范。
 
 5. **免安装独立打包发行 (`dist/`)**：
-   - 前后端全量预装包内置 64 位 `rime.dll`、Rime 基础数据及全套雾凇拼音词库；
+   - 前后端全量预装包内置 64 位 `rime.dll` 与 Rime 基础数据，开箱即用；
    - 开箱即用，无需配置复杂的系统注册表或管理员提权。
 
 ---
@@ -119,7 +119,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package_dist.ps1
 ## 开源致谢 (Acknowledgements)
 
 * **[RIME / 中州韵输入法引擎](https://rime.im/)**: 聪慧的跨平台输入法核心引擎。
-* **[rime-ice / 雾凇拼音](https://github.com/iDvel/rime-ice)**: 长期维护、词库纯净且质量极高的高质量中文拼音词库。
+* **[Weasel / 小狼毫](https://github.com/rime/weasel)**: 成熟的 Windows TSF 输入法核心实现，本项目在其之上重建现代化前端。
+* **[rime-prelude](https://github.com/rime/rime-prelude)** / **[rime-luna-pinyin](https://github.com/rime/rime-luna-pinyin)**: librime 自带的基础数据与朙月拼音方案。
 * **[Fluent-Qt](https://github.com/CalvinHxx/Fluent-Qt)**: 优雅的 Qt 现代 Fluent 风格控件库。
 * **[xmake](https://xmake.io/)**: 现代化极速 C/C++ 构建工具。
 

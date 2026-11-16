@@ -2,6 +2,8 @@
 #include "emoji_picker_window.h"
 #include "extension_panel_window.h"
 
+#include "paths.h"
+
 #include <QApplication>
 #include <QPainter>
 #include <QPainterPath>
@@ -1601,7 +1603,7 @@ fluent::menus_toolbars::FluentMenu* CandidateWindow::createExtensionMenu() {
     const QString curSchema = cfg.schema();
     struct SchemaOption { QString name; QString id; };
     const QVector<SchemaOption> schemaOpts = {
-        {QStringLiteral("雾凇拼音 (全拼)"), QStringLiteral("rime_ice")},
+        {QStringLiteral("朙月拼音 (全拼)"), QStringLiteral("luna_pinyin")},
         {QStringLiteral("自然码双拼"), QStringLiteral("double_pinyin")},
         {QStringLiteral("小鹤双拼"), QStringLiteral("double_pinyin_flypy")},
         {QStringLiteral("朙月拼音"), QStringLiteral("luna_pinyin")}
@@ -1639,8 +1641,7 @@ fluent::menus_toolbars::FluentMenu* CandidateWindow::createExtensionMenu() {
     auto* actFolder = menu->addAction(QStringLiteral("打开用户词库与配置目录..."));
     actFolder->setIcon(createFluentMenuIcon(Typography::Icons::Folder, iconColor));
     connect(actFolder, &QAction::triggered, this, []() {
-        QString userDir = QStringLiteral("C:/Users/zheng/AppData/Roaming/Rime");
-        QDesktopServices::openUrl(QUrl::fromLocalFile(userDir));
+        QDesktopServices::openUrl(QUrl::fromLocalFile(WeaselPaths::userDataDir()));
     });
 
     // 11. 机械键盘音效反馈

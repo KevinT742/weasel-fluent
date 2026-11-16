@@ -192,7 +192,7 @@ private:
     bool m_asciiMode = false;
     bool m_fullShape = false;
     bool m_simplified = true;
-    QString m_currentSchema = QStringLiteral("rime_ice");
+    QString m_currentSchema = QStringLiteral("luna_pinyin");
     QString m_simInput;
     int m_simHighlight = 0;
 };

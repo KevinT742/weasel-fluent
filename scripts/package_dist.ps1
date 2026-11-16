@@ -1,8 +1,9 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
-$ProjectDir = "C:\Users\zheng\.gemini\antigravity\scratch\weasel-fluent-cpp-qt"
-$DistBase = "$ProjectDir\dist"
-$DistDir = "$DistBase\weasel-fluent"
+# 仓库根目录 = 本脚本所在目录的父目录（脚本位于 scripts/）
+$ProjectDir = Split-Path -Parent $PSScriptRoot
+$DistBase = Join-Path $ProjectDir "dist"
+$DistDir = Join-Path $DistBase "weasel-fluent"
 
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "  Packaging Weasel-Fluent C++ Qt + Rime Standalone Bundle   " -ForegroundColor Cyan
@@ -35,28 +36,48 @@ if (Test-Path $Windeployqt) {
 }
 
 # 4. Copy Librime Backend (rime.dll)
-$RimeDll = "C:\Program Files\Rime\weasel-0.17.4\rime.dll"
+$RimeDll = Join-Path $ProjectDir "deps\rime\dist\lib\rime.dll"
 if (Test-Path $RimeDll) {
-    Copy-Item $RimeDll -Destination "$DistDir\rime.dll" -Force
+    Copy-Item $RimeDll -Destination (Join-Path $DistDir "rime.dll") -Force
     Write-Host "[3/7] Copied Librime 64-bit backend (rime.dll)" -ForegroundColor Green
+} else {
+    Write-Host "[3/7] WARNING: rime.dll not found at $RimeDll (run scripts/fetch_rime.ps1)" -ForegroundColor Yellow
 }
 
-# 5. Copy Rime Shared Data
-$RimeDataSrc = "C:\Program Files\Rime\weasel-0.17.4\data"
-if (Test-Path $RimeDataSrc) {
-    Copy-Item -Recurse $RimeDataSrc -Destination "$DistDir\data" -Force
-    Write-Host "[4/7] Copied Rime shared data directory" -ForegroundColor Green
+# 5. Copy Rime Shared Data (rime-prelude + rime-luna-pinyin)
+$RimeDataSrc = Join-Path $ProjectDir "deps\rime-prelude"
+$LunaSrc = Join-Path $ProjectDir "deps\rime-luna-pinyin"
+if ((Test-Path $RimeDataSrc) -and (Test-Path $LunaSrc)) {
+    $RimeDataDst = Join-Path $DistDir "data"
+    New-Item -ItemType Directory -Path $RimeDataDst -Force | Out-Null
+    $preludeKeep = @("default.yaml", "key_bindings.yaml", "grammar.yaml", "punctuation.yaml",
+                      "symbols.yaml", "sgns.yaml", "emoji.yaml")
+    foreach ($name in $preludeKeep) {
+        $src = Join-Path $RimeDataSrc $name
+        if (Test-Path $src) { Copy-Item $src -Destination $RimeDataDst -Force }
+    }
+    $lunaKeep = @("luna_pinyin.schema.yaml", "luna_pinyin.dict.yaml", "pinyin.yaml",
+                  "luna_pinyin_simp.schema.yaml", "luna_pinyin_tw.schema.yaml",
+                  "luna_pinyin_fluency.schema.yaml", "luna_quanpin.schema.yaml")
+    foreach ($name in $lunaKeep) {
+        $src = Join-Path $LunaSrc $name
+        if (Test-Path $src) { Copy-Item $src -Destination $RimeDataDst -Force }
+    }
+    Write-Host "[4/7] Copied Rime shared data (rime-prelude + rime-luna-pinyin)" -ForegroundColor Green
+} else {
+    Write-Host "[4/7] WARNING: Rime data not found (run scripts/fetch_rime.ps1)" -ForegroundColor Yellow
 }
 
-# 6. Copy Rime Ice Dictionaries & Schemas
-$UserRimeSrc = "$env:APPDATA\Rime"
-$UserDictsDst = "$DistDir\user_dicts"
+# 6. Copy user dictionary templates (bundled dictionary excluded, no user state)
+$UserRimeSrc = Join-Path $env:APPDATA "Rime"
+$UserDictsDst = Join-Path $DistDir "user_dicts"
 New-Item -ItemType Directory -Path $UserDictsDst -Force | Out-Null
 if (Test-Path $UserRimeSrc) {
-    Get-ChildItem -Path $UserRimeSrc -Exclude "*.userdb","*.log" | ForEach-Object {
-        Copy-Item -Recurse $_.FullName -Destination $UserDictsDst -Force
-    }
-    Write-Host "[5/7] Copied Rime-Ice full schemas and dictionaries" -ForegroundColor Green
+    # Only user-authored custom dictionaries; never the bundled dictionary payload.
+    Get-ChildItem -Path $UserRimeSrc -Filter "*.dict.yaml" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notmatch '^(luna_pinyin|essay|ext)' } |
+        ForEach-Object { Copy-Item $_.FullName -Destination $UserDictsDst -Force }
+    Write-Host "[5/7] Copied user custom dictionaries" -ForegroundColor Green
 }
 
 # 7. Copy Assets and Config

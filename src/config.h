@@ -114,7 +114,7 @@ private:
     QString m_fontFamily = QStringLiteral("Microsoft YaHei UI");
     QString m_switchKey = QStringLiteral("Shift");
     QString m_pageKeys = QStringLiteral("comma_period");
-    QString m_schema = QStringLiteral("rime_ice");
+    QString m_schema = QStringLiteral("luna_pinyin");
     bool m_cjkSpacing = false;
 
     mutable QString m_customPath;

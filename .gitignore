@@ -21,3 +21,6 @@ __pycache__/
 /*.png
 /*.ps1
 !/scripts/*.ps1
+
+# Vendored build dependencies (fetched by scripts/*.ps1, not source)
+/deps/

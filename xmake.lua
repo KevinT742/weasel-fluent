@@ -83,8 +83,14 @@ target("weasel-fluent-cpp-qt")
 
     after_build(function (target)
         local targetfile = target:targetfile()
-        if os.isfile(targetfile) and os.isdir("build/Release") then
-            os.cp(targetfile, "build/Release/weasel-fluent-cpp-qt.exe")
+        -- README documents build/Release as the canonical output location.
+        local release_dir = path.join(os.projectdir(), "build", "Release")
+        if os.isfile(targetfile) and not os.isdir(release_dir) then
+            os.tryrm(release_dir)   -- drop a stale file left at that path
+            os.mkdir(release_dir)
+        end
+        if os.isfile(targetfile) and os.isdir(release_dir) then
+            os.cp(targetfile, path.join(release_dir, "weasel-fluent-cpp-qt.exe"))
         end
         if os.isfile(targetfile) and os.isdir("dist/weasel-fluent") then
             local dst = "dist/weasel-fluent/weasel-fluent-cpp-qt.exe"
@@ -109,8 +115,13 @@ target("weasel-fluent-tsf")
 
     after_build(function (target)
         local targetfile = target:targetfile()
-        if os.isfile(targetfile) and os.isdir("build/Release") then
-            os.trycp(targetfile, "build/Release/weasel-fluent-tsf.dll")
+        local release_dir = path.join(os.projectdir(), "build", "Release")
+        if os.isfile(targetfile) and not os.isdir(release_dir) then
+            os.tryrm(release_dir)
+            os.mkdir(release_dir)
+        end
+        if os.isfile(targetfile) and os.isdir(release_dir) then
+            os.trycp(targetfile, path.join(release_dir, "weasel-fluent-tsf.dll"))
         end
         if os.isfile(targetfile) and os.isdir("dist/weasel-fluent") then
             local dst = "dist/weasel-fluent/weasel-fluent-tsf.dll"

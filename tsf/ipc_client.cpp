@@ -23,7 +23,16 @@ void IpcClient::tryLaunchServer() {
     }
 
     if (serverPath[0] == L'\0') {
-        wcscpy_s(serverPath, L"C:\\Users\\zheng\\.gemini\\antigravity\\scratch\\weasel-fluent-cpp-qt\\dist\\weasel-fluent\\weasel-fluent-cpp-qt.exe");
+        // Fallback: the service executable ships next to this DLL.
+        wchar_t dllPath[MAX_PATH] = {0};
+        if (GetModuleFileNameW(g_hInst, dllPath, MAX_PATH) > 0) {
+            std::wstring dir(dllPath);
+            const size_t pos = dir.find_last_of(L"\\/");
+            if (pos != std::wstring::npos) {
+                dir = dir.substr(0, pos + 1) + L"weasel-fluent-cpp-qt.exe";
+                wcsncpy_s(serverPath, dir.c_str(), _TRUNCATE);
+            }
+        }
     }
 
     // Clean quotes if present

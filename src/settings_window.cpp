@@ -1,5 +1,7 @@
 #include "settings_window.h"
 
+#include "paths.h"
+
 #include <QApplication>
 #include <QDesktopServices>
 #include <QUrl>
@@ -635,7 +637,7 @@ void HeroPreviewCard::paintEvent(QPaintEvent* event) {
     QFont bf = p.font();
     bf.setPixelSize(10);
     p.setFont(bf);
-    p.drawText(badgeRect, Qt::AlignCenter, QStringLiteral("Windows 11 Mica 材质 · 雾凇拼音 (rime-ice) · 全拼"));
+    p.drawText(badgeRect, Qt::AlignCenter, QStringLiteral("Windows 11 Mica 材质 · 朙月拼音 (luna_pinyin) · 全拼"));
 
     // ------------------------------------------------------------------------
     // Right: "选择要应用的主题" Quick Preset Tiles (Win11 Settings Style)
@@ -1414,7 +1416,7 @@ QWidget* SettingsWindow::createMaintenancePage() {
 
     layout->addWidget(createPageHeader(
         QStringLiteral("词库与维护"),
-        QStringLiteral("管理 Rime 引擎核心依赖、雾凇拼音词库与执行方案重新部署")));
+        QStringLiteral("管理 Rime 引擎核心依赖、用户词库与执行方案重新部署")));
 
     layout->addWidget(createSectionHeader(QStringLiteral("Rime 引擎状态与方案")));
 
@@ -1437,14 +1439,13 @@ QWidget* SettingsWindow::createMaintenancePage() {
     auto* btnOpenDict = new fluent::basicinput::Button(QStringLiteral("打开目录"));
     btnOpenDict->setFluentStyle(fluent::basicinput::Button::Standard);
     connect(btnOpenDict, &fluent::basicinput::Button::clicked, this, []() {
-        QString path = QStringLiteral("C:/Users/zheng/AppData/Roaming/Rime");
-        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+        QDesktopServices::openUrl(QUrl::fromLocalFile(WeaselPaths::userDataDir()));
     });
 
     layout->addWidget(new SettingsCard(
         Typography::Icons::Folder,
-        QStringLiteral("雾凇拼音用户词库"),
-        QStringLiteral("词库位于 C:/Users/zheng/AppData/Roaming/Rime (rime-ice)"),
+        QStringLiteral("用户词库目录"),
+        QStringLiteral("词库位于 %1").arg(WeaselPaths::userDataDir()),
         btnOpenDict, QColor(16, 124, 65), container));
 
     // 3. Deploy
@@ -1472,18 +1473,12 @@ QWidget* SettingsWindow::createMaintenancePage() {
         deployBox, QColor(0, 164, 239), container));
 
     // 4. Active Schema Card
+    // TODO(Task 5): replaced by a live enumeration of the user's *.schema.yaml files.
     m_comboSchema = new fluent::basicinput::ComboBox();
     m_comboSchema->setFixedWidth(240);
-    m_comboSchema->addItem(QStringLiteral("雾凇拼音全拼 (rime-ice) [默认]"));
-    m_comboSchema->addItem(QStringLiteral("雾凇双拼 · 自然码方案"));
-    m_comboSchema->addItem(QStringLiteral("雾凇双拼 · 小鹤双拼方案"));
-    m_comboSchema->addItem(QStringLiteral("朙月拼音 · 传统全拼 (luna-pinyin)"));
+    m_comboSchema->addItem(QStringLiteral("朙月拼音 · 全拼 (luna_pinyin) [默认]"));
 
-    QString curSch = cfg.schema();
-    if (curSch == QStringLiteral("zrm")) m_comboSchema->setCurrentIndex(1);
-    else if (curSch == QStringLiteral("flypy")) m_comboSchema->setCurrentIndex(2);
-    else if (curSch == QStringLiteral("luna_pinyin")) m_comboSchema->setCurrentIndex(3);
-    else m_comboSchema->setCurrentIndex(0);
+    m_comboSchema->setCurrentIndex(0);
 
     connect(m_comboSchema, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &SettingsWindow::onSchemaChanged);
@@ -1491,7 +1486,7 @@ QWidget* SettingsWindow::createMaintenancePage() {
     layout->addWidget(new SettingsCard(
         Typography::Icons::Document,
         QStringLiteral("输入法方案 (Rime Schema)"),
-        QStringLiteral("选择当前生效的雾凇拼音或双拼输入方案，更改后将自动重新部署"),
+        QStringLiteral("选择当前生效的输入方案，更改后将自动重新部署"),
         m_comboSchema, QColor(0, 164, 239), container));
 
     // 5. Backup User Dict Card
@@ -1522,17 +1517,17 @@ QWidget* SettingsWindow::createMaintenancePage() {
     auto* btnOpenInstallDir = new fluent::basicinput::Button(QStringLiteral("浏览安装路径"));
     btnOpenInstallDir->setFluentStyle(fluent::basicinput::Button::Standard);
     connect(btnOpenInstallDir, &fluent::basicinput::Button::clicked, this, []() {
-        QString path = QStringLiteral("C:/Program Files/Rime/weasel-0.17.4");
-        if (!QFileInfo::exists(path)) {
-            path = QStringLiteral("C:/Program Files/Rime");
-        }
-        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+        const QString shared = WeaselPaths::sharedDataDir();
+        const QString dir = shared.isEmpty()
+                                ? WeaselPaths::installDir()
+                                : QFileInfo(shared).absolutePath();
+        QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
     });
 
     layout->addWidget(new SettingsCard(
         Typography::Icons::Storage,
-        QStringLiteral("小狼毫安装程序目录"),
-        QStringLiteral("查看位于 Program Files 的 Weasel 核心组件与系统字典资源"),
+        QStringLiteral("Rime 核心组件目录"),
+        QStringLiteral("查看 librime 核心库与共享数据所在位置"),
         btnOpenInstallDir, QColor(0, 164, 239), container));
 
     layout->addStretch(1);
@@ -1593,7 +1588,7 @@ QWidget* SettingsWindow::createAboutPage() {
     layout->addWidget(new SettingsCard(
         Typography::Icons::World,
         QStringLiteral("开源核心与第三方库"),
-        QStringLiteral("librime (GPLv3) · Qt 6.8.2 (LGPLv3) · Fluent-Qt (MIT) · 雾凇拼音 (CC-BY-SA)"),
+        QStringLiteral("librime (GPLv3) · Weasel (GPLv3) · Qt 6.8.2 (LGPLv3) · Fluent-Qt (MIT)"),
         btnOpenLicense, QColor(0, 164, 239), container));
 
     // 4. Export Config Card
@@ -1712,18 +1707,15 @@ void SettingsWindow::onCjkSpacingToggled(bool on) {
 }
 
 void SettingsWindow::onSchemaChanged(int index) {
-    QString s = QStringLiteral("rime_ice");
-    if (index == 1) s = QStringLiteral("zrm");
-    else if (index == 2) s = QStringLiteral("flypy");
-    else if (index == 3) s = QStringLiteral("luna_pinyin");
-    AppConfig::instance().setSchema(s);
+    Q_UNUSED(index);
+    AppConfig::instance().setSchema(QStringLiteral("luna_pinyin"));
     if (m_heroPreview) m_heroPreview->refresh();
     onDeployClicked();
 }
 
 void SettingsWindow::onBackupDictClicked() {
-    QString rimeDir = QStringLiteral("C:/Users/zheng/AppData/Roaming/Rime");
-    QString backupDir = rimeDir + QStringLiteral("/backup/") + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmss"));
+    const QString rimeDir = WeaselPaths::userDataDir();
+    const QString backupDir = rimeDir + QStringLiteral("/backup/") + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmss"));
     QDir().mkpath(backupDir);
 
     QDir src(rimeDir);
@@ -1911,7 +1903,7 @@ void SettingsWindow::onResetDefaultsClicked() {
     cfg.setShowPreedit(false);
     cfg.setSwitchKey(QStringLiteral("Shift"));
     cfg.setPageKeys(QStringLiteral("comma_period"));
-    cfg.setSchema(QStringLiteral("rime_ice"));
+    cfg.setSchema(QStringLiteral("luna_pinyin"));
     cfg.setCjkSpacing(false);
 
     syncControlsFromConfig();
