@@ -6,7 +6,12 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%2011%20x64-0078D7.svg)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-GPLv3-brightgreen.svg)](LICENSE)
 
-基于 **C++17** 与 **Qt6 / Fluent-Qt** 深度构建的全新 Windows 11 Fluent 2 / WinUI 3 风格现代输入法前端与独立服务。
+基于 **C++17** 与 **Qt6 / Fluent-Qt** 深度构建的 Windows 11 **Fluent 2** 风格现代输入法前端与独立服务。
+
+**项目定位：小狼毫（Weasel）输入引擎基座 + Fluent 设计语言的现代化前端。**
+输入引擎、TSF 注册、部署逻辑与配置模型继承自官方 Weasel；本项目负责把它们的老式
+Win32 界面（`WeaselDeployer` 对话框、`WeaselTrayIcon` 托盘）重写为 Fluent 界面，
+并保留 Fluent 候选窗、表情面板与扩展面板作为视觉主体。
 
 深度挂接 Librime 64 位核心引擎（`rime.dll`）与 Windows 11 TSF 系统输入法架构，彻底解决原版小狼毫界面老旧、高分屏模糊、容易假死与无法自适应 Win11 原生亚克力磨砂质感的历史痛点。
 
@@ -148,7 +153,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package_dist.ps1
 ## 开源致谢 (Acknowledgements)
 
 * **[RIME / 中州韵输入法引擎](https://rime.im/)**: 聪慧的跨平台输入法核心引擎。
-* **[Weasel / 小狼毫](https://github.com/rime/weasel)**: 成熟的 Windows TSF 输入法核心实现，本项目在其之上重建现代化前端。
+* **[Weasel / 小狼毫](https://github.com/rime/weasel)**: 成熟的 Windows TSF 输入法核心实现 —— **本项目的引擎基座**，其 `include/`、`WeaselIPC/`、`WeaselIPCServer/`、`RimeWithWeasel/` 已 vendor 至 `3rdparty/weasel/`（上游 commit 见 `3rdparty/weasel/UPSTREAM.md`）。
 * **[rime-prelude](https://github.com/rime/rime-prelude)** / **[rime-luna-pinyin](https://github.com/rime/rime-luna-pinyin)**: librime 自带的基础数据与朙月拼音方案。
 * **[Fluent-Qt](https://github.com/CalvinHxx/Fluent-Qt)**: 优雅的 Qt 现代 Fluent 风格控件库。
 * **[xmake](https://xmake.io/)**: 现代化极速 C/C++ 构建工具。

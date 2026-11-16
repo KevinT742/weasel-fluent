@@ -2,6 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **规划修正（2026-11-16，第 1 次）**：本计划已执行完毕，内容未改动。
+> 项目定位澄清为「**基于小狼毫的 Fluent 设计**」，据此修订的是**设计文档**
+> （`docs/superpowers/specs/2026-11-16-weasel-core-merge-modern-ui-design.md`）
+> 的 §0 定位、§4 架构与 §7 Round 2 范围。
+> 本计划产出的 `src/rime_config_client.h` 正是修订后 §4.3 的**切换点**，
+> 交付内容与修订完全兼容，无需返工。
+
 **Goal:** 让 `设计.md` 六项需求中的四项「增加」变成真实可用功能，并完成路径治理、去除 rime-ice、Fluent 托盘菜单与 GPLv3 许可证切换；同时把官方 Weasel 内核 vendor 进仓库并编译成静态库，为 Round 2 的引擎/TDF 换型铺路。
 
 **Architecture:** 引入 `src/paths.{h,cpp}` 作为全部路径的唯一真源；新增 `SchemaManager` / `DictionaryManager` / `SkinManager` / `KeyBindings` 四个自成一体的功能模块，各自只通过 `AppConfig` 与磁盘交互，不互相依赖；新增 `src/rime_config_client.h` 抽象接口隔离「Rime 配置操作」，Round 1 由本仓 `RimeEngine` 实现，Round 2 改接 Weasel 的 `Configurator`/`Styler`/`ActionLoader`；官方 Weasel 源码置于 `3rdparty/weasel/` 并以静态库形式参与链接。

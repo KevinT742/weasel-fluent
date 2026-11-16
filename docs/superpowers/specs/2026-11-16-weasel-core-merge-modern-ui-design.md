@@ -4,6 +4,33 @@
 - 仓库：`KevinT742/weasel-fluent`
 - 状态：已批准（用户确认许可证改 GPLv3、方案与两轮划分）
 - 依据：`设计.md`（仓库根目录）六项需求 + 官方 Weasel（`rime/weasel`）源码勘察
+- 修订：2026-11-16 第 1 次规划修正 —— 见 §0 与 §11
+
+---
+
+## 0. 项目定位（规划修正的锚点）
+
+> **本项目 = 小狼毫（Weasel）输入引擎基座 + Fluent 设计语言的现代化前端。**
+
+这句话是所有架构决策的判据，逐句展开：
+
+| 定位要素 | 含义 | 对规划的约束 |
+| :--- | :--- | :--- |
+| **基于小狼毫** | 输入引擎、TSF 注册、部署逻辑、皮肤键体系、词库/方案配置模型**全部继承自官方 Weasel** | 不再自研输入法管线；自研实现降级为过渡态（§1.3） |
+| **Fluent 设计** | 界面按 Windows 11 Fluent 2 规范实现（Mica/Acrylic、Segoe UI 变量字体、圆角与层级、强调色 token） | 视觉与交互以 Fluent 为唯一目标，不混用其他设计语言 |
+| **现代化前端** | 现代化的是**界面层**，不是引擎 | 菜单层（对应 `WeaselDeployer` 对话框 + `WeaselTrayIcon`）是主战场 |
+
+**已核实的边界事实**（决定了哪些东西不能自研、哪些不能引入）：
+
+- 官方 Weasel **不含任何 WinUI 3 / XAML**：`WeaselDeployer` 是纯 Win32/WTL 对话框，`WeaselUI` 是 Direct2D，源码仓库无 `.xaml` 文件。
+  ⇒ 它的老界面**无法通过「改样式」变现代**，只能**重写界面** —— 这正是本项目的价值所在。
+- 官方 Weasel 自带一套**按样式键分组**的皮肤体系：`include/WeaselStyleKeys.h` 定义
+  `StyleValueType {Boolean, Enum, Int, Str, Theme}` 与三语本地化标签，对应部署器的
+  `UIStyleSettingsDialog`；皮肤配置（`weasel.yaml` + `color_scheme: youtube/obsidian/inkstone` + `layout`）
+  随安装数据分发，不在源码仓库。
+  ⇒ 存在**两套皮肤机制**，边界见 §6.4。
+- 本仓现有候选窗已是 Fluent 实现（`candidate_window.cpp:114` 起手即 *WinUI 3 / Windows 11 Mica base color* + 微纹理 + Acrylic/Mica 材质）。
+  ⇒ **候选窗保留我们的 Fluent 实现**（已确认），官方 `WeaselUI` 的 D2D 面板不引入（§5.1）。
 
 ---
 
@@ -14,12 +41,14 @@
 把 `设计.md` 的六项需求全部落地为**真实可用**的功能（而非当前的 UI 外壳），并且：
 
 - 以**官方 Weasel 的输入法实现**为内核底座，不再维护一套平行的精简 TSF 实现；
-- 把 Weasel 的老式 Win32 菜单（`WeaselDeployer` 四个对话框、`WeaselTrayIcon` 托盘）替换为 **Qt6 / Fluent-Qt 现代化界面**；
-- 保留本项目已有的 Fluent 候选窗、表情面板、扩展面板作为视觉主体。
+- 把 Weasel 的老式 Win32 菜单（`WeaselDeployer` 四个对话框、`WeaselTrayIcon` 托盘）替换为 **Qt6 / Fluent-Qt 的 Fluent 风格界面**；
+- **保留本项目已有的 Fluent 候选窗、表情面板、扩展面板**作为视觉主体（已确认：不引入官方 `WeaselUI` 的 D2D 面板）。
 
 ### 1.2 非目标
 
 - 不重写 librime；不引入新的拼音引擎或词库算法。
+- 不引入官方 `WeaselUI/`（Direct2D 候选面板）—— 候选窗归本仓的 Fluent 实现，理由见 §4.3。
+- 不追求 WinUI 3 / XAML 技术栈；设计语言是 **Fluent**，实现技术栈是 **Qt6 + Fluent-Qt**。
 - 不实现 TSF 的 `ITfComposition` 内联预编辑（推迟至 Round 2，见 §7）。
 - 不引入 Rime 之外的插件体系。
 
@@ -29,6 +58,7 @@
 | :--- | :--- |
 | Weasel 内核 | 官方 `rime/weasel` 的 `include/`、`WeaselIPC/`、`WeaselIPCServer/`、`RimeWithWeasel/`、`WeaselTSF/` |
 | Fluent 前端 | 本仓 `src/` 下的 Qt6/Fluent-Qt 界面层 |
+| 过渡实现 | 本仓自研的 `src/rime_engine.*` 与 `tsf/`：Round 1 期间的输入管线，Round 2 起由官方 Weasel 运行时接管后删除。`RimeConfigClient` 是切换点 |
 | 服务 | 本仓 `weasel-fluent-cpp-qt.exe` 以服务模式运行的进程，宿主 Weasel 内核 |
 | 设置中心 | 本仓 `weasel-fluent-cpp-qt.exe --settings` 独立进程 |
 
@@ -97,9 +127,11 @@ weasel-fluent-tsf.dll        : TSF COM TIP（当前为精简实现）
 
 ### 4.1 模块图
 
+**终态（Round 2 之后）**
+
 ```
 ┌─ Windows 应用进程 ────────────────────────────┐
-│  WeaselTSF (vendored, Round 2 换入)           │
+│  WeaselTSF (vendored)                        │
 │    CandidateList / Composition / EditSession  │
 │    DisplayAttributeProvider / LanguageBar     │
 │    Compartment (KEYBOARD_OPENCLOSE)           │
@@ -107,10 +139,10 @@ weasel-fluent-tsf.dll        : TSF COM TIP（当前为精简实现）
 └─────────┼──────────────────────────────────────┘
           │
 ┌─────────▼──────────────────────────────────────┐
-│  本仓 Qt 服务进程                                │
+│  本仓 Fluent 服务进程                           │
 │    WeaselIPCServer  (vendored)  ← 服务端        │
 │    RimeWithWeasel   (vendored)  ← librime 封装  │
-│    CandidateWindow / EmojiPicker / Extension   │  ← Fluent 保留
+│    CandidateWindow / EmojiPicker / Extension   │  ← Fluent 保留（不引入 WeaselUI）
 │    TrayMenu (Fluent-Qt menus_toolbars)        │  ← 替换 WeaselTrayIcon
 └─────────┬──────────────────────────────────────┘
           │ WeaselIPC
@@ -123,20 +155,40 @@ weasel-fluent-tsf.dll        : TSF COM TIP（当前为精简实现）
 └────────────────────────────────────────────────┘
 ```
 
+**过渡态（Round 1，当前代码）** —— 同构，但服务进程内的
+`WeaselIPCServer + RimeWithWeasel` 暂由自研 `RimeEngine` + 精简 `tsf/` 顶替，
+两侧用 `RimeConfigClient` 隔开：
+
+```
+Windows 应用 ─TSF─> 本仓精简 tsf/ ─IPC(自有协议)─> 本仓 Fluent 服务 ─> 自研 RimeEngine
+                                        │
+                                        └─ 目标：换成 WeaselIPC + WeaselIPCServer + RimeWithWeasel
+```
+
 ### 4.2 模块边界规则（红线）
 
 - **R1** Weasel 内核**不得**依赖 Qt；任何 Qt 依赖只允许存在于 `src/`。
 - **R2** Fluent 侧**不得**直接调用 librime C API；一切经 Weasel IPC 客户端。
 - **R3** 设置中心**不得**直接写 `%APPDATA%\Rime`；配置变更经 Weasel `Configurator`/`Styler`/`ActionLoader`。
-- **R4** 候选窗渲染**不得**同时存在两套实现；同一时刻只有 Weasel D2D 面板或 Fluent Qt 窗口之一。
+- **R4** 候选窗渲染**不得**同时存在两套实现。本项目**保留 Fluent Qt 候选窗**，
+  因此**官方 `WeaselUI/`（D2D 面板）不引入**，接 `WeaselTSF` 时必须走 §4.3 的桥接。
 - **R5** 所有路径必须经统一解析函数；**禁止**出现 `C:/Users/<用户名>` 或绝对盘符字面量（可用 `scripts/verify-no-hardcoded-paths.ps1` 自检）。
+- **R6**（新增）**过渡实现必须可被整体删除**：`src/rime_engine.*` 与 `tsf/` 只能通过
+  `RimeConfigClient` 抽象层被调用；一旦官方运行时接管，删除它们不应波及 `src/` 其余部分。
 
 ### 4.3 与 R2/R4 的张力及裁决
 
-Weasel 的 `CCandidateList` 内部持有 `weasel::UI`（D2D 面板）。本项目要保留 Fluent Qt 候选窗，故：
+Weasel 的 `CCandidateList` 内部持有 `weasel::UI`（D2D 面板）。**已裁决：候选窗保留本仓的
+Fluent Qt 实现**，因此：
 
-- Round 1：保留现有精简 TIP 作桥接，不引入 `WeaselUI`，不违反 R4。
-- Round 2：换入 `WeaselTSF` 时，**必须**同时提供 `CCandidateList` → Fluent Qt 窗口的桥接实现，删除 `WeaselUI` 依赖。否则 R4 冲突。
+- **不引入** `WeaselUI/`；`WeaselTSF` 的候选列表后端替换为**指向 Fluent 候选窗的桥接**。
+- 桥接方向固定为 **WeaselTSF → Fluent 候选窗**（而非反向）：TSF 侧仍负责组合态、
+  候选同步、光标定位等 IME 语义；Fluent 侧只负责渲染与交互。
+- 迁移顺序：先让 `WeaselTSF` 的数据流跑通（经 WeaselIPC），再把 `CCandidateList` 的
+  `_ui` 换成桥接实现，最后删除 `WeaselUI` 依赖。
+- 若桥接在 Round 2 内无法收敛，**降级方案**是让 `WeaselTSF` 走 Weasel 自带 D2D 面板、
+  我们的 Fluent 候选窗降级为备用 —— 但这会违反「保留 Fluent 候选窗」的前提，
+  需重新走一次设计评审。
 
 ---
 
@@ -152,9 +204,9 @@ Weasel 的 `CCandidateList` 内部持有 `weasel::UI`（D2D 面板）。本项�
 | `WeaselIPC/` | ✅ 全量 | 客户端：`Configurator`、`Styler`、`ActionLoader`、`Committer`、`ContextUpdater`、`ResponseParser`、`PipeChannel` |
 | `WeaselIPCServer/` | ✅ 全量 | 服务端：`WeaselServerImpl`、`SecurityAttribute` |
 | `RimeWithWeasel/` | ✅ 全量 | librime 封装 + `WeaselUtility` |
-| `WeaselTSF/` | 🔶 Round 2 | 完整 TSF；接入前须完成 §4.3 桥接 |
-| `WeaselUI/` | ❌ | D2D 面板，被 Fluent Qt 候选窗取代（R4） |
-| `WeaselDeployer/` | ❌ | 老 Win32 对话框，被 Fluent 设置中心取代 |
+| `WeaselTSF/` | 🔶 Round 2 采纳 | 完整 TSF（组合态 / 候选列表 / 显示属性 / 语言栏 / Compartment）。接入前须完成 §4.3 桥接；**不连带引入 `WeaselUI/`** |
+| `WeaselUI/` | ❌ 明确不采纳 | D2D 候选面板。候选窗保留本仓 Fluent 实现（R4），故整个模块不引入 |
+| `WeaselDeployer/` | ❌ | 老 Win32 对话框，被 Fluent 设置中心取代（方案/词库/皮肤/快捷键 四项已一一对应） |
 | `WeaselServer/` | ❌ | 老托盘 + 老服务外壳，被本仓服务取代（仅参考 `WeaselTrayIcon` 行为） |
 | `WeaselSetup/` | ❌ | Round 2 重写为 `scripts/install.ps1`（§6.6） |
 
@@ -224,16 +276,22 @@ Weasel 的 `CCandidateList` 内部持有 `weasel::UI`（D2D 面板）。本项�
 
 ### 6.4 增加：自定义皮肤
 
-**双皮肤体系并存，职责不重叠**：
+**两套皮肤机制并存，职责按「谁来渲染」划分，不重叠**：
 
-| 层 | 皮肤对象 | 机制 |
-| :--- | :--- | :--- |
-| Fluent 界面层（候选窗/设置中心/托盘） | Fluent token | `fluent::UserTheme::applyOverrides(QJsonObject)` + `UserTheme::filePath()` |
-| Weasel 内核层（若 Round 2 启用 D2D 面板） | Weasel style | `WeaselIPC/Styler` + `WeaselStyleColor.h` / `WeaselStyleKeys.h` |
+| 层 | 渲染者 | 皮肤对象 | 机制 |
+| :--- | :--- | :--- | :--- |
+| Fluent 界面层（候选窗 / 设置中心 / 托盘） | **本仓 Fluent 实现** | Fluent token | `fluent::UserTheme::applyOverrides(QJsonObject)` + `UserTheme::filePath()` |
+| Weasel 内核层（状态通知、语言栏图标） | 官方 Weasel | Weasel style 键 | `WeaselIPC/Styler` + `WeaselStyleColor.h` / `WeaselStyleKeys.h` + `weasel.yaml` |
 
-- Round 1 实现 Fluent token 层：导入 skin JSON → 写入 `UserTheme::filePath()` → `UserTheme::apply()`；提供"导出模板"（`UserTheme::exportTemplate(true)`）与"恢复默认"。
-- 皮肤 JSON 结构遵循 Fluent-Qt 自带 schema（含 `schema` 版本号），非法字段整体拒绝（`applyOverrides` 语义：无效则拒绝整次更新）。
+- **边界规则（§0 定位的直接推论）**：因为候选窗归本仓，Fluent token 就是**用户感知到的那个皮肤**；
+  `weasel.yaml` 只影响 Weasel 自身绘制的状态通知/语言栏，二者不冲突，但**界面上必须让用户知道改哪个**：
+  设置中心的「自定义皮肤」页需分两栏（Fluent 皮肤 / Weasel 状态栏样式），并注明各自作用域。
+- Round 1 实现 Fluent token 层：导入 skin JSON → 写入 `UserTheme::filePath()` → `UserTheme::apply()`；
+  提供「导出模板」（`UserTheme::exportTemplate(true)`）与「恢复默认」。
+- 皮肤 JSON 结构遵循 Fluent-Qt 自带 schema（含 `schema` 版本号），非法字段整体拒绝
+  （`applyOverrides` 语义：无效则拒绝整次更新）。
 - 追加 `config.json` 的 `skin_file` 字段，支持多皮肤文件切换。
+- Round 2 追加 Weasel style 栏（经 `WeaselIPC/Styler` 写 `weasel.yaml`），与 Fluent 皮肤并列。
 
 ### 6.5 增加：自定义快捷键
 
@@ -292,14 +350,21 @@ Weasel 的 `CCandidateList` 内部持有 `weasel::UI`（D2D 面板）。本项�
 | 1.7 | Fluent 托盘菜单 + `show_tray` 开关（§6.7） | — | 托盘菜单渲染正常 |
 | 1.8 | 许可证与致谢改 GPLv3（§3） | — | `LICENSE` 为 GPLv3 全文 |
 
-### Round 2 — 内核与发行
+### Round 2 — 内核接管与发行（按 §0 定位重排）
 
 | 序 | 内容 | 验收 |
 | :-- | :--- | :-- |
-| 2.1 | 桥接 `CCandidateList` → Fluent Qt 候选窗（§4.3） | 候选窗不再重复出现（R4） |
-| 2.2 | 换入 `WeaselTSF`（内联预编辑 / 语言栏 / 显示属性） | 系统语言栏显示正确模式 |
-| 2.3 | `scripts/install.ps1` / `uninstall.ps1`（§6.6） | 在装有官方 Weasel 的机器上一键替换成功 |
-| 2.4 | `package_dist.ps1` 去硬编码、产出完整发行包 | 换机可跑 |
+| 2.1 | 编译并链接 Weasel 内核：Boost 1.88（`vc143` 绕过 VS18 探测）+ `WeaselIPC`/`WeaselIPCServer`/`RimeWithWeasel` 静态库进主程序 | `xmake build` 通过；服务进程实际使用 Weasel 的引擎封装 |
+| 2.2 | 换入 `WeaselTSF`（内联预编辑 / 语言栏 / 显示属性 / Compartment） | 系统语言栏显示正确模式；中英状态与系统同步 |
+| 2.3 | **桥接 `CCandidateList` → Fluent 候选窗**（§4.3，方向固定 WeaselTSF → Fluent） | 候选窗只出现一次（R4）；不引入 `WeaselUI` |
+| 2.4 | 服务进程切到 `WeaselIPCServer + RimeWithWeasel`；`RimeConfigClient` 的实现换成 Weasel 版 | 删除自研 `RimeEngine` 后 `src/` 其余部分不受影响（R6） |
+| 2.5 | **删除过渡实现**：`src/rime_engine.*` 与精简 `tsf/` 退役 | 全仓不再有平行 TSF 实现 |
+| 2.6 | `scripts/install.ps1` / `uninstall.ps1`（§6.6） | 在装有官方 Weasel 的机器上一键替换成功（HKCU CLSID 影子注册，免提权） |
+| 2.7 | 设置中心「自定义皮肤」补 Weasel style 栏（§6.4 双轨边界） | 两套皮肤的作用域在界面上可辨识 |
+| 2.8 | `package_dist.ps1` 产出完整发行包 | 换机可跑 |
+
+**Round 2 的关键路径**是 2.2 → 2.3 → 2.4 → 2.5，顺序不可颠倒：
+先让官方 TSF 的数据流跑通，再替换候选窗后端，再切换服务端，最后才能删掉过渡实现。
 
 ---
 
@@ -314,9 +379,9 @@ Weasel 的 `CCandidateList` 内部持有 `weasel::UI`（D2D 面板）。本项�
 
 | 命令 | 用途 | 扩展 |
 | :--- | :--- | :-- |
-| `--verify` | 现有 9 项单元/集成测试 | **新增**：路径解析、方案枚举、词库挂载、皮肤覆盖、键位解析共 5 项 |
+| `--verify` | 单元/集成测试 | **Round 1 已从 9 项扩到 14 项**（新增：全量部署、方案枚举与 YAML 解析、词库挂载改写、皮肤校验、键位解析） |
 | `--demo` | 静态候选条预览 | 新增皮肤切换演示 |
-| `--capture` | 截图 | 新增设置中心四页截图 |
+| `--capture` | 截图 | 新增设置中心四页 + 皮肤页（滚动定位）截图 |
 
 ### 8.3 脚本级自检（新增 `scripts/verify-*.ps1`）
 
@@ -347,6 +412,51 @@ Weasel 的 `CCandidateList` 内部持有 `weasel::UI`（D2D 面板）。本项�
 | 5 | 去掉 `rime-ice` 后开箱词量锐减 | 用户体感下降 | 明确 README 指引用「自定义词库」导入；默认 `luna_pinyin` 至少保证可用 |
 | 6 | Weasel 内核 `/MT` 与 GUI `/MD` 运行时不一致 | 链接错误 | 统一为 `/MT`（Weasel 上游要求），或把内核编成独立 DLL 隔离 |
 | 7 | 合并后 GPLv3 与既有 MIT 发布物不一致 | 下游合规 | 已在 §3 决策；README 与致谢同步 |
+| 8 | **WeaselTSF → Fluent 候选窗桥接无法收敛**（§4.3） | Round 2 的 2.3 卡壳，导致内核接管整体延后 | 已预设降级方案（Weasel D2D 面板 + Fluent 候选窗降级为备用），但需重走设计评审；也可把桥接拆成独立子项目先验证 |
+| 9 | **两套皮肤机制并存造成用户困惑**（§6.4） | 用户改了 Fluent 皮肤却看不到状态通知变化 | 设置中心把两者分栏并标注作用域；README 明确「改哪一套影响哪一块」 |
+| 10 | 官方 Weasel 无 WinUI/XAML，老界面**无法改样式只能重写** | 现代化成本高于预期 | 已定位为项目价值本身（非风险），但意味着「菜单现代化」是**重写**而非「改样式」，工期不可低估 |
+
+---
+
+## 11. 修订记录
+
+### 第 1 次修订 —— 2026-11-16 · 规划修正
+
+**修正动因**：用户澄清项目定位为「**基于小狼毫的 Fluent 设计**」（初次表述里的「WinUI3」为口误，
+实际设计语言是 Fluent）。据此复核全文并做定位层面的修正，**不含代码改动**。
+
+**核实到的边界事实**（新增，写入 §0）：
+
+1. 官方 Weasel **不含任何 WinUI 3 / XAML**（`WeaselDeployer` 纯 Win32/WTL，`WeaselUI` 是 D2D，
+   仓库内无 `.xaml`）⇒ 它的老界面只能**重写**，不能改样式。
+2. 官方 Weasel 自带**按样式键分组**的皮肤体系（`WeaselStyleKeys.h` 的
+   `StyleValueType{Boolean,Enum,Int,Str,Theme}` + 三语本地化标签）⇒ 存在两套皮肤机制，
+   需明确边界。
+3. 本仓现有候选窗已是 Fluent 实现 ⇒ **候选窗保留我们的**（用户已确认）。
+
+**逐条改动**：
+
+| 位置 | 改动 |
+| :--- | :--- |
+| §0（新增） | 写入「小狼毫内核基座 + Fluent 前端」的定位判据表与三条边界事实 |
+| §1.1 | 目标表述改为「Weasel 内核底座 + Fluent 风格界面」；明确候选窗归属 |
+| §1.2 | 新增两条非目标：不引入 `WeaselUI/`、不追求 WinUI 3 技术栈 |
+| §1.3 | 新增术语「过渡实现」，定义 `RimeConfigClient` 为切换点 |
+| §4.1 | 模块图拆为「终态」与「过渡态」两幅，标出自研 RimeEngine/精简 TSF 的顶替关系 |
+| §4.2 | R4 精确化（保留 Fluent 候选窗 ⇒ `WeaselUI` 不引入）；新增 **R6**（过渡实现必须可整体删除） |
+| §4.3 | 桥接方向固定为 **WeaselTSF → Fluent 候选窗**；补迁移顺序与降级方案 |
+| §5.1 | `WeaselTSF/` 标记为「Round 2 采纳」，`WeaselUI/` 标记为「明确不采纳」 |
+| §6.4 | 皮肤边界改为「按谁来渲染划分」，补 Weasel style 栏（Round 2）与界面分栏要求 |
+| §7 | Round 2 重排为 2.1–2.8，并标注关键路径 2.2→2.3→2.4→2.5 不可颠倒 |
+| §8.2 | `--verify` 实际进度改为「9 项 → 14 项」 |
+| §9 | 新增风险 8/9/10（桥接收敛、双皮肤困惑、Win32 老界面只能重写） |
+
+**未改动**：§2 现状基线、§3 许可证、§6.1–6.3 / §6.5–6.7 的功能设计、§10 附录 ——
+这些与定位修正无关，Round 1 已按此实现并验证。
+
+**对 Round 1 已交付代码的影响**：无。Round 1 交付内容（路径治理、去 rime-ice、
+四个设置功能真做、Fluent 托盘菜单、GPLv3）与本修正完全兼容；
+`RimeConfigClient` 抽象层正是为 §4.3 的切换点预留的。
 
 ---
 
