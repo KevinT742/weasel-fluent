@@ -1,0 +1,22 @@
+diff --git a/3rdparty/weasel/WeaselTSF/CandidateList.cpp b/3rdparty/weasel/WeaselTSF/CandidateList.cpp
+index 0f763c8..3ebacb9 100644
+--- a/3rdparty/weasel/WeaselTSF/CandidateList.cpp
++++ b/3rdparty/weasel/WeaselTSF/CandidateList.cpp
+@@ -363,7 +363,16 @@ void CCandidateList::_DisposeUIWindowAll() {
+ 
+ void CCandidateList::_MakeUIWindow() {
+   HWND p = _GetActiveWnd();
+-  _ui->Create(p);
++  // [weasel-fluent] 候选窗由 Fluent 前端独占，这里不创建 Weasel 的 D2D 面板，
++  // 否则会与 Fluent 候选窗重复显示（设计文档 §4.2 R4）。
++  //
++  // 不创建窗口不影响数据流：weasel::UI 的 Show/UpdateInputPosition/Destroy
++  // 都对 pimpl_->panel.IsWindow() 做了保护，而 UI::Update() 无条件写入
++  // ctx_/status_。因此本 TIP 仍然：
++  //   * 通过 ITfCandidateListUIElement 向系统提供候选列表与选中项
++  //   * 通过 _ui->ctx() / _ui->style() 支撑内联预编辑
++  // 只有「可见的候选窗」被交给了 Fluent 前端。
++  (void)p;
+ }
+ 
+ void WeaselTSF::_UpdateUI(const Context& ctx, const Status& status) {

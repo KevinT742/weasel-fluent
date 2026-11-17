@@ -94,9 +94,21 @@ add_includedirs("3rdparty/weasel/include/wtl")
 --
 -- 三个模块都按 /MD 编译：本仓 GUI 链的是 Qt 官方二进制（/MD），若跟随上游的
 -- /MT 会产生 LNK2038 运行库不匹配。Boost 亦为 /MD（runtime-link=shared）。
+--
+-- /FIguiddef.h /FIcoguid.h：Visual Studio 18 的 <Windows.h> 在
+-- WIN32_LEAN_AND_MEAN 下不再顺带包含 guiddef.h，而 ATL 的 atlcomcli.h 会用到
+-- GUID_NULL / IID_NULL 却不自己包含它们（它假定包含者已经带过了）。
+-- guiddef.h 提供 GUID 的 typedef 与 DEFINE_GUID 宏，coguid.h 用该宏给出
+-- GUID_NULL / IID_NULL / CLSID_NULL 的定义（需配合 INITGUID）。
+-- 两者都是 SDK 自带头，且 guiddef.h 自带 GUID 的 typedef，提前包含是安全的。
+-- 这属于构建层适配，不改动 vendor 源码。
 -- ---------------------------------------------------------------------------
 local weasel_defines = {"UNICODE", "_UNICODE", "WINDOWS", "MSVC", "BOOST_ALL_NO_LIB"}
 local weasel_cxflags = {"/utf-8", "/GS", "/Gy", "/EHsc", "/Zc:wchar_t", "/Zc:forScope", "/Zc:inline", "/MD"}
+-- /FI 必须 force=true，否则 xmake 会把它当未知参数「自动忽略」（只打印一行警告），
+-- 于是 guiddef.h / coguid.h 根本没被强制包含，症状是 atlcomcli.h 里
+-- 「GUID_NULL: 未声明的标识符」。
+local weasel_force_include = {"/FIguiddef.h", "/FIcoguid.h"}
 
 target("WeaselIPC")
     set_kind("static")
@@ -104,6 +116,7 @@ target("WeaselIPC")
     add_defines(weasel_defines)
     if is_plat("windows") then
         add_cxflags(weasel_cxflags, {tools = {"cl", "clang_cl"}})
+        add_cxflags(weasel_force_include, {force = true, tools = {"cl", "clang_cl"}})
     end
     add_includedirs("3rdparty/weasel/include")
     add_includedirs("3rdparty/weasel/include/wtl")
@@ -116,6 +129,7 @@ target("WeaselIPCServer")
     add_defines(weasel_defines)
     if is_plat("windows") then
         add_cxflags(weasel_cxflags, {tools = {"cl", "clang_cl"}})
+        add_cxflags(weasel_force_include, {force = true, tools = {"cl", "clang_cl"}})
     end
     add_includedirs("3rdparty/weasel/include")
     add_includedirs("3rdparty/weasel/include/wtl")
@@ -128,12 +142,54 @@ target("RimeWithWeasel")
     add_defines(weasel_defines)
     if is_plat("windows") then
         add_cxflags(weasel_cxflags, {tools = {"cl", "clang_cl"}})
+        add_cxflags(weasel_force_include, {force = true, tools = {"cl", "clang_cl"}})
     end
     add_includedirs("3rdparty/weasel/include")
     add_includedirs("3rdparty/weasel/include/wtl")
     add_includedirs("deps/rime/dist/include")
     add_files("3rdparty/weasel/RimeWithWeasel/*.cpp")
     add_syslinks("advapi32", "user32", "ole32")
+
+-- Target: WeaselUI (static)
+--
+-- ⚠️ 虽然设计文档写的是「不引入 WeaselUI」，但 WeaselTSF 的 CCandidateList 持有
+-- std::unique_ptr<weasel::UI>，而 weasel::UI 的实现（UIImpl / WeaselPanel / D2D）
+-- 就在 WeaselUI/ 里 —— 没有它 WeaselTSF 根本编不过。
+--
+-- 所以这里引入 WeaselUI，但**只作为数据载体**：补丁 0001 让 TIP 不调用
+-- _ui->Create()，D2D 面板窗口永不创建，候选窗由 Fluent 前端独占（§4.2 R4）。
+target("WeaselUI")
+    set_kind("static")
+    set_languages("cxx17")
+    add_defines(weasel_defines)
+    add_defines("INITGUID")
+    if is_plat("windows") then
+        add_cxflags(weasel_cxflags, {tools = {"cl", "clang_cl"}})
+        add_cxflags(weasel_force_include, {force = true, tools = {"cl", "clang_cl"}})
+    end
+    add_includedirs("3rdparty/weasel/include")
+    add_files("3rdparty/weasel/WeaselUI/*.cpp")
+    add_syslinks("user32", "shlwapi", "dwmapi", "shcore", "gdi32", "shell32",
+                 "d2d1", "dwrite", "dxgi", "d3d11", "dcomp", "windowscodecs", "ole32")
+
+-- Target: WeaselTSF (static) — 上游 TSF 实现
+--
+-- D2D 候选面板已由 3rdparty/weasel/patches/0001-disable-d2d-candidate-panel.patch
+-- 编译掉；运行该脚本即可把补丁打上（幂等）。
+target("WeaselTSF")
+    set_kind("static")
+    set_languages("cxx17")
+    add_defines(weasel_defines)
+    add_defines("WEASEL_TSF_EXPORTS", "INITGUID")
+    if is_plat("windows") then
+        add_cxflags(weasel_cxflags, {tools = {"cl", "clang_cl"}})
+        add_cxflags(weasel_force_include, {force = true, tools = {"cl", "clang_cl"}})
+    end
+    add_includedirs("3rdparty/weasel/include")
+    add_includedirs("3rdparty/weasel/include/wtl")
+    add_deps("WeaselIPC", "WeaselUI")
+    add_files("3rdparty/weasel/WeaselTSF/*.cpp")
+    add_syslinks("advapi32", "user32", "ole32", "oleaut32", "dwmapi")
 
 -- Target: FluentQt (Static Library)
 target("FluentQt")
