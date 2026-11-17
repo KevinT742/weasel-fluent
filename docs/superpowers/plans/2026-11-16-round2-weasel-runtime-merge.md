@@ -1,0 +1,1215 @@
+# Round 2 实施计划：接管官方 Weasel 内核 + 保留 Fluent 候选窗
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 把官方 Weasel 的输入引擎与 TSF 实现接进本仓，替换自研的 `RimeEngine` 与精简 `tsf/`，同时**保留 Fluent 候选窗**（不引入 Weasel 的 D2D 面板），并落地「自动替换旧的服务」的安装器。
+
+**Architecture:** 官方 Weasel 的分层是「服务持有引擎 + TIP 作为客户端」。本仓对齐同一分层：服务进程用 `weasel::Server` + 上游自带的 `RimeWithWeaselHandler`（它本身就实现 `weasel::RequestHandler`），TIP 换成 `WeaselTSF`。候选窗的桥接点非常小：`RimeWithWeaselHandler` 驱动一个 `weasel::UI`，而 `weasel::Context` 本身就带 `preedit` 与 `cinfo`（候选词），`weasel::Status` 带 `ascii_mode`/`schema_id` —— 本仓 `RimeUiState` 与它们几乎一一对应，只需一个适配层把二者映射起来。
+
+**Tech Stack:** C++17 · Qt 6.8.2 · Fluent-Qt · xmake 3.1.2 · Boost 1.88.0（thread/serialization/system，**/MD**）· librime 1.17.x · 官方 rime/weasel（GPLv3，commit `f96ed24a`）
+
+## Global Constraints
+
+- 许可证 **GPLv3**（`LICENSE` 已改，勿动）。
+- **路径红线**（设计文档 §4.2 R5）：一律经 `WeaselPaths::*`；`scripts/verify-no-hardcoded-paths.ps1` 必须保持通过。
+- **过渡实现必须可整体删除**（R6）：`src/rime_engine.*` 与 `tsf/` 只允许通过 `src/rime_config_client.h` 抽象层被调用。
+- **候选窗只出现一次**（R4）：官方 `WeaselUI/` 的 D2D 面板**不引入**；`WeaselTSF` 必须打补丁禁用其 D2D 渲染。
+- **运行时统一 `/MD`**：本仓 GUI（Qt 官方二进制）、vendor 的 Weasel 静态库、Boost 静态库**三者一致**。
+  ⚠️ 上游 Weasel 用 `/MT`，**本仓不跟随** —— 跟随会导致与 Qt 的 LNK2038 运行库不匹配。
+- **Boost 必须用 `runtime-link=shared`**（/MD），否则同样 LNK2038。
+- **ATL / WTL**：Weasel 的 `WeaselIPCServer` 用 ATL 的 `CWindowImpl`；WTL 已 vendor 在 `3rdparty/weasel/include/wtl/`。
+- 本机工具链：Qt `C:\Qt\6.8.2\msvc2022_64`；xmake `C:\devtools\xmake\xmake\xmake.exe`；VS 18（MSVC 19.51，**Boost 需显式 `vc143`**）。
+- 每次提交前跑 `powershell -ExecutionPolicy Bypass -File scripts/run-selfchecks.ps1`（含 `--verify`，Round 1 为 14 项，Round 2 扩到 18 项）。
+
+---
+
+## File Structure
+
+### 新增
+
+| 路径 | 职责 |
+| :--- | :-- |
+| `src/weasel_engine.h` / `.cpp` | 封装上游 `RimeWithWeaselHandler` + `weasel::Server`：持引擎、转发按键、产出 `weasel::Context`/`Status` |
+| `src/fluent_ui_adapter.h` / `.cpp` | 桥接层：把 `weasel::Context`/`Status` 映射为 `RimeUiState` 并推给 `CandidateWindow` |
+| `src/weasel_config_client.h` / `.cpp` | `RimeConfigClient` 的 Weasel 实现（方案/部署/皮肤/快捷键） |
+| `3rdparty/weasel/WeaselTSF/` | vendor 的上游 TSF 实现 |
+| `3rdparty/weasel/patches/0001-disable-d2d-candidate-panel.patch` | 禁用 TIP 内 D2D 面板的 vendor 补丁（可审计） |
+| `scripts/apply-weasel-patches.ps1` | 幂等地把补丁应用到 vendor 目录 |
+| `scripts/install.ps1` / `scripts/uninstall.ps1` | 每用户安装器 / 卸载器（§6.6） |
+| `src/weasel_protocol.h` | 上游协议常量与结构的薄封装（CLSID、管道名、命令码） |
+
+### 删除（Task 8）
+
+`src/rime_engine.h`、`src/rime_engine.cpp`、`tsf/`（含 `weasel_tsf.cpp`、`ipc_client.cpp`、`ipc_server.*` 旧协议）、
+`src/ipc_server.h`、`src/ipc_server.cpp`、`src/input_hook.*`（若确认不再需要）
+
+### 修改
+
+| 路径 | 改动 |
+| :--- | :-- |
+| `xmake.lua` | 新增 `WeaselIPC`/`WeaselIPCServer`/`RimeWithWeasel`/`WeaselTSF` 静态库 target；Boost 链接；ATL 包含路径；`/MD` 统一 |
+| `src/candidate_window.h` / `.cpp` | 新增 `updateFromWeasel(const weasel::Context&, const weasel::Status&)` |
+| `src/settings_window.h` / `.cpp` | 方案/皮肤/快捷键改走 `WeaselConfigClient` |
+| `src/main.cpp` | 服务模式改用 `WeaselEngine`；托盘命令经 Weasel IPC |
+| `src/rime_config_client.h` | `RimeConfigClient` 接口保持不变（Round 1 已定），仅换实现 |
+
+---
+
+## Task 1: 依赖就位 —— Boost 1.88（/MD）+ ATL + xmake 静态库 target
+
+**Files:**
+- Modify: `scripts/build_boost.ps1`（`runtime-link=shared`）
+- Modify: `xmake.lua`
+- Create: `src/weasel_protocol.h`
+
+**Interfaces:**
+- Consumes: 无
+- Produces:
+  - xmake target `WeaselIPC`（static）、`WeaselIPCServer`（static）、`RimeWithWeasel`（static）
+  - `src/weasel_protocol.h` 提供：
+    ```cpp
+    namespace WeaselProtocol {
+        extern const wchar_t* kPipeName;          // L"WeaselNamedPipe"
+        extern const wchar_t* kServerWindowClass;  // L"WeaselIPCWindow_1.0"
+        extern const char* kClsidFluentTextService;  // "{D7B1C618-...}"
+        extern const char* kClsidOfficialWeasel;     // "{A3F4CDED-...}"
+    }
+    ```
+
+- [ ] **Step 1: 改 `scripts/build_boost.ps1` 用 /MD**
+
+把 b2 调用里的 `runtime-link=shared` 保持不变（当前已是 shared），并确认注释写明「必须 /MD 以匹配 Qt 官方二进制」。若文件里仍是 `runtime-link=static`，改为 `runtime-link=shared`。
+
+验证：脚本输出末尾应有
+```
+      OK boost_thread -> libboost_thread-vc143-mt-x64-1_88.lib
+      OK boost_serialization -> ...
+      OK boost_system -> ...
+```
+
+- [ ] **Step 2: 写 `src/weasel_protocol.h`**
+
+```cpp
+#ifndef WEASEL_PROTOCOL_H
+#define WEASEL_PROTOCOL_H
+
+/// 官方 Weasel IPC / TSF 注册相关的协议常量。
+/// 数值与上游 include/WeaselIPC.h、tsf/register.cpp 保持一致。
+namespace WeaselProtocol {
+
+/// 上游 IPC 管道名（不含 \\.\pipe\<user>\ 前缀）。
+inline constexpr const wchar_t* kPipeName = L"WeaselNamedPipe";
+
+/// 上游 IPC 服务窗口类名。
+inline constexpr const wchar_t* kServerWindowClass = L"WeaselIPCWindow_1.0";
+
+/// 本仓 TSF 文本服务 CLSID。
+inline constexpr const char* kClsidFluentTextService = "{D7B1C618-9F3E-4E7B-B96E-5C13D1A5B4C2}";
+
+/// 官方 Weasel 文本服务 CLSID（安装器用它做 HKCU 影子覆盖）。
+inline constexpr const char* kClsidOfficialWeasel = "{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}";
+
+/// 本仓 TSF 语言配置 id。
+inline constexpr const char* kTipString =
+    "0804:{D7B1C618-9F3E-4E7B-B96E-5C13D1A5B4C2}{E8934A01-C349-4F8A-8512-14AE0293BD01}";
+
+} // namespace WeaselProtocol
+
+#endif // WEASEL_PROTOCOL_H
+```
+
+- [ ] **Step 5: 在 `xmake.lua` 加三个静态库 target 与全局依赖**
+
+在 `set_version("1.0.0")` 之后加入：
+
+```lua
+-- Boost（由 scripts/build_boost.ps1 构建到 deps/boost）
+add_includedirs("deps/boost")
+add_linkdirs("deps/boost/lib")
+
+-- ATL（Visual Studio 自带）—— Weasel 的 WeaselIPCServer 用 ATL 的 CWindowImpl
+local vs_root = os.getenv("VCToolsInstallDir") or ""
+if vs_root ~= "" then
+    add_includedirs(path.join(vs_root, "..", "..", "ATL", "include"))
+    add_includedirs(path.join(vs_root, "..", "..", "ATL", "include", "atlwin"))
+end
+
+-- Vendored Weasel
+add_includedirs("3rdparty/weasel/include")
+add_includedirs("3rdparty/weasel/include/wtl")
+```
+
+再新增三个 target（放在 `FluentQt` target 之前）：
+
+```lua
+-- Target: WeaselIPC (static) — 上游 IPC 客户端
+target("WeaselIPC")
+    set_kind("static")
+    set_languages("cxx17")
+    add_defines("UNICODE", "_UNICODE", "WINDOWS", "MSVC", "BOOST_ALL_NO_LIB")
+    if is_plat("windows") then
+        add_cxflags("/utf-8", "/GS", "/Gy", "/EHsc", "/Zc:wchar_t", "/Zc:forScope", "/Zc:inline", "/MD", {tools = {"cl", "clang_cl"}})
+    end
+    add_includedirs("3rdparty/weasel/include")
+    add_includedirs("3rdparty/weasel/include/wtl")
+    add_files("3rdparty/weasel/WeaselIPC/*.cpp")
+    add_syslinks("advapi32", "user32", "ole32")
+
+-- Target: WeaselIPCServer (static)
+target("WeaselIPCServer")
+    set_kind("static")
+    set_languages("cxx17")
+    add_defines("UNICODE", "_UNICODE", "WINDOWS", "MSVC", "BOOST_ALL_NO_LIB")
+    if is_plat("windows") then
+        add_cxflags("/utf-8", "/GS", "/Gy", "/EHsc", "/Zc:wchar_t", "/Zc:forScope", "/Zc:inline", "/MD", {tools = {"cl", "clang_cl"}})
+    end
+    add_includedirs("3rdparty/weasel/include")
+    add_includedirs("3rdparty/weasel/include/wtl")
+    add_files("3rdparty/weasel/WeaselIPCServer/*.cpp")
+    add_syslinks("advapi32", "user32", "ole32")
+
+-- Target: RimeWithWeasel (static) — 上游引擎封装 + RequestHandler
+target("RimeWithWeasel")
+    set_kind("static")
+    set_languages("cxx17")
+    add_defines("UNICODE", "_UNICODE", "WINDOWS", "MSVC", "BOOST_ALL_NO_LIB")
+    if is_plat("windows") then
+        add_cxflags("/utf-8", "/GS", "/Gy", "/EHsc", "/Zc:wchar_t", "/Zc:forScope", "/Zc:inline", "/MD", {tools = {"cl", "clang_cl"}})
+    end
+    add_includedirs("3rdparty/weasel/include")
+    add_includedirs("3rdparty/weasel/include/wtl")
+    add_includedirs("deps/rime/dist/include")
+    add_files("3rdparty/weasel/RimeWithWeasel/*.cpp")
+    add_syslinks("advapi32", "user32", "ole32")
+```
+
+- [ ] **Step 6: 编译验证**
+
+Run: `C:\devtools\xmake\xmake\xmake.exe build -a`
+Expected: 三个 static target 编译通过。若 ATL 头找不到，把 `add_includedirs` 改成显式绝对路径
+`C:/Program Files/Microsoft Visual Studio/18/Community/VC/ATL/include`。
+
+- [ ] **Step 7: 提交**
+
+```bash
+git add xmake.lua scripts/build_boost.ps1 src/weasel_protocol.h
+git commit -m "build: link the vendored Weasel core as static libraries
+
+Adds WeaselIPC / WeaselIPCServer / RimeWithWeasel targets with ATL and
+Boost headers wired in, and pins every vendored translation unit to /MD
+so it matches the Qt 6.8.2 binaries instead of upstream's /MT."
+```
+
+---
+
+## Task 2: vendor `WeaselTSF/` 并编译成静态库
+
+**Files:**
+- Create: `3rdparty/weasel/WeaselTSF/**`（vendor）
+- Create: `3rdparty/weasel/patches/0001-disable-d2d-candidate-panel.patch`
+- Create: `scripts/apply-weasel-patches.ps1`
+- Modify: `xmake.lua`
+
+**Interfaces:**
+- Consumes: Task 1 的 xmake 结构
+- Produces: xmake target `WeaselTSF`（static）；`scripts/apply-weasel-patches.ps1` 幂等应用补丁
+
+- [ ] **Step 1: vendor 上游 `WeaselTSF/`**
+
+```powershell
+$src = 'C:\devtools\weasel-ref\WeaselTSF'
+$dst = 'E:\weasel-fluent\weasel-fluent\3rdparty\weasel\WeaselTSF'
+New-Item -ItemType Directory -Path $dst -Force | Out-Null
+Copy-Item -Path "$src\*.cpp","$src\*.h" -Destination $dst -Force
+Copy-Item -Path "$src\WeaselTSF.def" -Destination $dst -Force
+```
+不拷贝 `*.vcxproj` / `*.filters` / `*.rc`（xmake 不需要）。
+
+- [ ] **Step 2: 写禁用 D2D 面板的 vendor 补丁**
+
+`3rdparty/weasel/patches/0001-disable-d2d-candidate-panel.patch`（记录上游 `WeaselTSF/CandidateList.cpp` 中
+`_MakeUIWindow()` 创建 `weasel::UI` 的位置，改为不创建）：
+
+```diff
+--- a/WeaselTSF/CandidateList.cpp
++++ b/WeaselTSF/CandidateList.cpp
+@@
+ void CCandidateList::_MakeUIWindow() {
++  // [weasel-fluent] 本项目用 Fluent 候选窗取代 Weasel 的 D2D 面板。
++  // 保留上下文/样式数据以继续服务 ITfCandidateListUIElement，但不创建窗口，
++  // 否则会与 Fluent 候选窗重复显示（R4）。
++  if (getenv("WEASEL_FLUENT_NO_D2D")) {
++    _pbShow = FALSE;
++    return;
++  }
+```
+
+补丁用**环境变量开关**而非硬改，理由：保留上游代码形态便于日后 rebase，且本机调试时可用
+`WEASEL_FLUENT_NO_D2D=1` 临时关闭。
+
+- [ ] **Step 3: 写 `scripts/apply-weasel-patches.ps1`（幂等）**
+
+```powershell
+$ErrorActionPreference = "Stop"
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$patchDir = Join-Path $RepoRoot "3rdparty\weasel\patches"
+$targetRoot = Join-Path $RepoRoot "3rdparty\weasel"
+
+Get-ChildItem -Path $patchDir -Filter '*.patch' -File | ForEach-Object {
+    $applied = & git -C $targetRoot apply --check --reverse $_.FullName 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "      already applied: $($_.Name)" -ForegroundColor DarkGray
+    } else {
+        & git -C $targetRoot apply $_.FullName
+        if ($LASTEXITCODE -ne 0) { throw "failed to apply $($_.Name)" }
+        Write-Host "      applied: $($_.Name)" -ForegroundColor Green
+    }
+}
+exit 0
+```
+
+- [ ] **Step 4: `xmake.lua` 加 `WeaselTSF` target**
+
+```lua
+-- Target: WeaselTSF (static) — 上游 TSF 实现（D2D 面板已打补丁禁用）
+target("WeaselTSF")
+    set_kind("static")
+    set_languages("cxx17")
+    add_defines("UNICODE", "_UNICODE", "WINDOWS", "MSVC", "BOOST_ALL_NO_LIB", "WEASEL_TSF_EXPORTS")
+    if is_plat("windows") then
+        add_cxflags("/utf-8", "/GS", "/Gy", "/EHsc", "/Zc:wchar_t", "/Zc:forScope", "/Zc:inline", "/MD", {tools = {"cl", "clang_cl"}})
+    end
+    add_includedirs("3rdparty/weasel/include")
+    add_includedirs("3rdparty/weasel/include/wtl")
+    add_files("3rdparty/weasel/WeaselTSF/*.cpp")
+    add_syslinks("advapi32", "user32", "ole32", "oleaut32", "dwmapi")
+```
+
+- [ ] **Step 5: 编译验证**
+
+Run: `powershell -ExecutionPolicy Bypass -File scripts/apply-weasel-patches.ps1`
+Expected: `applied: 0001-disable-d2d-candidate-panel.patch`
+
+Run: `C:\devtools\xmake\xmake\xmake.exe build -a`
+Expected: `WeaselTSF` target 编译通过。
+若报 `CWindowImpl` / ATL 缺失 → 补 `add_includedirs("C:/Program Files/Microsoft Visual Studio/18/Community/VC/ATL/include")`。
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add 3rdparty/weasel/WeaselTSF 3rdparty/weasel/patches scripts/apply-weasel-patches.ps1 xmake.lua
+git commit -m "build: vendor WeaselTSF with the D2D candidate panel disabled
+
+The TIP stays a full TSF implementation (composition, display
+attributes, language bar, compartment) but no longer creates its own
+Direct2D panel, so the Fluent candidate window remains the only visible
+candidate list (design rule R4). The change is kept as an auditable
+patch rather than an in-place edit so upstream stays rebaseable."
+```
+
+---
+
+## Task 3: `WeaselEngine` —— 用上游 `RimeWithWeaselHandler` 取代自研 `RimeEngine`
+
+**Files:**
+- Create: `src/weasel_engine.h`, `src/weasel_engine.cpp`
+
+**Interfaces:**
+- Consumes: Task 1 的 `RimeWithWeasel` target；vendor 的 `include/RimeWithWeasel.h`
+- Produces:
+  ```cpp
+  class WeaselEngine : public QObject {
+      Q_OBJECT
+  public:
+      explicit WeaselEngine(QObject* parent = nullptr);
+      ~WeaselEngine() override;
+
+      /// 启动 IPC 服务端并初始化 Rime 引擎。
+      bool start(QString* error = nullptr);
+
+      /// 处理一次按键（由 TIP 经 IPC 转发而来）。
+      bool processKey(const weasel::KeyEvent& keyEvent, DWORD sessionId);
+
+      /// 当前会话的组合态与状态。
+      const weasel::Context& context() const;
+      const weasel::Status& status() const;
+
+      /// UI 需要重绘时的回调（桥接点，见 Task 4）。
+      void setUpdateCallback(std::function<void()> cb);
+
+      /// 触发全量重建（对应设计文档 §6.2）。
+      bool deployFull(QString* error = nullptr);
+
+  signals:
+      void stateChanged();
+  };
+  ```
+
+- [ ] **Step 1: 写 `src/weasel_engine.h`**
+
+```cpp
+#ifndef WEASEL_ENGINE_H
+#define WEASEL_ENGINE_H
+
+#include <QObject>
+#include <QString>
+
+#include <WeaselIPC.h>
+#include <WeaselIPCData.h>
+#include <RimeWithWeasel.h>
+
+#include <functional>
+#include <memory>
+
+/// 封装上游的 Rime 引擎与 IPC 服务端。
+///
+/// 上游 Weasel 的分层是「服务持有引擎 + TIP 作为客户端」；本类维持同一分层，
+/// 但把 UI 推送交给 Fluent 侧（见 FluentUiAdapter）。
+class WeaselEngine : public QObject {
+    Q_OBJECT
+public:
+    explicit WeaselEngine(QObject* parent = nullptr);
+    ~WeaselEngine() override;
+
+    bool start(QString* error = nullptr);
+    void stop();
+
+    bool processKey(const weasel::KeyEvent& keyEvent, DWORD sessionId);
+
+    const weasel::Context& context() const { return m_context; }
+    const weasel::Status& status() const { return m_status; }
+    weasel::UIStyle& style() { return m_style; }
+
+    void setUpdateCallback(std::function<void()> cb) { m_updateCb = std::move(cb); }
+
+    bool deployFull(QString* error = nullptr);
+
+    /// 服务端窗口句柄（安装器与托盘用）。
+    HWND serverHwnd() const;
+
+signals:
+    void stateChanged();
+
+private:
+    void onUpdateUI();
+
+    weasel::Server* m_server = nullptr;
+    weasel::UI* m_ui = nullptr;
+    std::unique_ptr<RimeWithWeaselHandler> m_handler;
+    weasel::Context m_context;
+    weasel::Status m_status;
+    weasel::UIStyle m_style;
+    std::function<void()> m_updateCb;
+    DWORD m_sessionId = 0;
+};
+
+#endif // WEASEL_ENGINE_H
+```
+
+- [ ] **Step 2: 写 `src/weasel_engine.cpp`**
+
+```cpp
+#include "weasel_engine.h"
+
+#include <QDebug>
+
+WeaselEngine::WeaselEngine(QObject* parent) : QObject(parent) {}
+
+WeaselEngine::~WeaselEngine() {
+    stop();
+}
+
+bool WeaselEngine::start(QString* error) {
+    // m_ui 不调用 Create() → 不创建 D2D 窗口，只作为 Context/Status 的载体。
+    m_ui = new weasel::UI();
+
+    m_handler = std::make_unique<RimeWithWeaselHandler>(m_ui);
+    m_handler->Initialize();
+    m_handler->OnUpdateUI([this]() { onUpdateUI(); });
+
+    m_server = new weasel::Server();
+    m_server->SetRequestHandler(m_handler.get());
+    m_server->Start();
+
+    m_sessionId = m_handler->AddSession(nullptr);
+    if (error) {
+        *error = QStringLiteral("Weasel IPC 服务已启动");
+    }
+    return true;
+}
+
+void WeaselEngine::stop() {
+    if (m_server) {
+        m_server->Stop();
+        delete m_server;
+        m_server = nullptr;
+    }
+    if (m_handler) {
+        m_handler->Finalize();
+        m_handler.reset();
+    }
+    if (m_ui) {
+        m_ui->Destroy(true);
+        delete m_ui;
+        m_ui = nullptr;
+    }
+}
+
+bool WeaselEngine::processKey(const weasel::KeyEvent& keyEvent, DWORD sessionId) {
+    if (!m_handler) {
+        return false;
+    }
+    return m_handler->ProcessKeyEvent(keyEvent, sessionId, nullptr) != FALSE;
+}
+
+void WeaselEngine::onUpdateUI() {
+    if (m_ui) {
+        m_context = m_ui->ctx();
+        m_status = m_ui->status();
+        m_style = m_ui->style();
+    }
+    if (m_updateCb) {
+        m_updateCb();
+    }
+    emit stateChanged();
+}
+
+bool WeaselEngine::deployFull(QString* error) {
+    // 全量重建：RimeStartMaintenance(FullDeploy) + JoinMaintenanceThread。
+    if (!m_handler) {
+        if (error) *error = QStringLiteral("引擎未初始化");
+        return false;
+    }
+    m_handler->StartMaintenance();
+    m_handler->EndMaintenance();
+    if (error) *error = QStringLiteral("已重新部署");
+    return true;
+}
+
+HWND WeaselEngine::serverHwnd() const {
+    return m_server ? m_server->GetHWnd() : nullptr;
+}
+```
+
+- [ ] **Step 3: 编译验证**
+
+Run: `C:\devtools\xmake\xmake\xmake.exe build -a`
+Expected: 编译通过。
+⚠️ `RimeWithWeaselHandler::ProcessKeyEvent` 的第三参 `EatLine` 是 `std::function<bool(std::wstring&)>`，传 `nullptr` 合法。
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add src/weasel_engine.h src/weasel_engine.cpp
+git commit -m "feat(engine): wrap the upstream RimeWithWeaselHandler as WeaselEngine
+
+Uses Weasel's own RequestHandler implementation instead of maintaining a
+parallel engine, which is the swap point the design calls for. The
+weasel::UI instance is created without Create(), so no Direct2D window
+is ever made -- it only carries Context/Status for the Fluent side."
+```
+
+---
+
+## Task 4: 桥接 —— `weasel::Context/Status` → Fluent 候选窗
+
+**Files:**
+- Create: `src/fluent_ui_adapter.h`, `src/fluent_ui_adapter.cpp`
+- Modify: `src/candidate_window.h`, `src/candidate_window.cpp`
+
+**Interfaces:**
+- Consumes: Task 3 的 `WeaselEngine::context()/status()`
+- Produces:
+  ```cpp
+  class FluentUiAdapter {
+  public:
+      explicit FluentUiAdapter(CandidateWindow* window);
+      /// 把上游 Context/Status 映射为 RimeUiState 并推给候选窗。
+      void apply(const weasel::Context& ctx, const weasel::Status& status);
+  };
+  ```
+  `CandidateWindow` 新增：
+  ```cpp
+  /// 直接以 Weasel 的组合态刷新候选窗（替代旧的 RimeUiState 通道）。
+  void updateFromWeasel(const weasel::Context& ctx, const weasel::Status& status);
+  ```
+
+- [ ] **Step 1: 写 `src/fluent_ui_adapter.h`**
+
+```cpp
+#ifndef FLUENT_UI_ADAPTER_H
+#define FLUENT_UI_ADAPTER_H
+
+#include <WeaselIPCData.h>
+
+class CandidateWindow;
+
+/// 把上游 Weasel 的组合态映射为本仓的候选窗状态。
+///
+/// 映射关系（设计文档 §4.3）：
+///   ctx.preedit.str            → RimeUiState::preedit
+///   ctx.cinfo.candies          → RimeUiState::candidates[i].text
+///   ctx.cinfo.comments         → RimeUiState::candidates[i].comment
+///   ctx.cinfo.highlighted      → RimeUiState::highlightedIndex
+///   ctx.cinfo.currentPage      → RimeUiState::pageNo
+///   ctx.cinfo.is_last_page     → RimeUiState::isLastPage
+///   status.ascii_mode          → 中英模式
+///   status.schema_id           → 方案 id
+class FluentUiAdapter {
+public:
+    explicit FluentUiAdapter(CandidateWindow* window) : m_window(window) {}
+
+    void apply(const weasel::Context& ctx, const weasel::Status& status);
+
+    /// 纯函数形式，便于单元测试。
+    static RimeUiState toUiState(const weasel::Context& ctx, const weasel::Status& status);
+
+private:
+    CandidateWindow* m_window = nullptr;
+};
+
+#endif // FLUENT_UI_ADAPTER_H
+```
+
+- [ ] **Step 2: 写 `src/fluent_ui_adapter.cpp`**
+
+```cpp
+#include "fluent_ui_adapter.h"
+
+#include "candidate_window.h"
+
+RimeUiState FluentUiAdapter::toUiState(const weasel::Context& ctx, const weasel::Status& status) {
+    RimeUiState st;
+    st.isComposing = !ctx.preedit.str.empty();
+    st.preedit = QString::fromStdWString(ctx.preedit.str);
+    st.cursorPos = ctx.preedit.cursor;
+    st.highlightedIndex = ctx.cinfo.highlighted;
+    st.pageNo = ctx.cinfo.currentPage;
+    st.isLastPage = ctx.cinfo.is_last_page;
+
+    const int n = static_cast<int>(ctx.cinfo.candies.size());
+    st.candidates.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        CandidateItem item;
+        item.index = i;
+        item.text = QString::fromStdWString(ctx.cinfo.candies[i]);
+        if (i < static_cast<int>(ctx.cinfo.comments.size())) {
+            item.comment = QString::fromStdWString(ctx.cinfo.comments[i]);
+        }
+        st.candidates.append(item);
+    }
+    return st;
+}
+
+void FluentUiAdapter::apply(const weasel::Context& ctx, const weasel::Status& status) {
+    if (!m_window) {
+        return;
+    }
+    m_window->updateFromWeasel(ctx, status);
+}
+```
+
+- [ ] **Step 3: 给 `CandidateWindow` 加 `updateFromWeasel`**
+
+`src/candidate_window.h` 的 `public:` 区加：
+
+```cpp
+    /// 以 Weasel 的组合态刷新候选窗。
+    void updateFromWeasel(const weasel::Context& ctx, const weasel::Status& status);
+```
+
+`src/candidate_window.cpp` 实现（把既有 `updateUiState` 的内部逻辑复用）：
+
+```cpp
+void CandidateWindow::updateFromWeasel(const weasel::Context& ctx, const weasel::Status& status) {
+    const RimeUiState st = FluentUiAdapter::toUiState(ctx, status);
+    updateUiState(st);
+    setAsciiMode(status.ascii_mode);
+}
+```
+并在 `src/candidate_window.cpp` 顶部加 `#include "fluent_ui_adapter.h"`。
+若 `CandidateWindow` 没有 `setAsciiMode`，改用其既有的模式 setter；没有则新增
+`void setAsciiMode(bool ascii);`（成员 `bool m_asciiMode = false;`）。
+
+- [ ] **Step 4: 接线：引擎回调 → 适配器**
+
+在 `src/main.cpp` 的服务模式里，创建引擎后：
+
+```cpp
+    WeaselEngine engine;
+    QString engineError;
+    if (!engine.start(&engineError)) {
+        std::cerr << "[FATAL] " << engineError.toStdString() << "\n";
+        return 1;
+    }
+
+    FluentUiAdapter adapter(&candWin);
+    engine.setUpdateCallback([&adapter, &engine]() {
+        adapter.apply(engine.context(), engine.status());
+    });
+```
+
+- [ ] **Step 5: 扩展 `--verify`：TEST 15（映射正确性）**
+
+```cpp
+    // 15. Verify FluentUiAdapter maps Weasel Context/Status to RimeUiState
+    std::cout << "[TEST 15] Testing FluentUiAdapter context mapping...\n";
+    {
+        weasel::Context ctx;
+        ctx.preedit.str = L"ni hao";
+        ctx.preedit.cursor = 5;
+        ctx.cinfo.candies.push_back(L"\x4F60\x597D");
+        ctx.cinfo.candies.push_back(L"\x4F60");
+        ctx.cinfo.comments.push_back(L"");
+        ctx.cinfo.comments.push_back(L"");
+        ctx.cinfo.highlighted = 1;
+        ctx.cinfo.currentPage = 0;
+        ctx.cinfo.is_last_page = true;
+
+        weasel::Status status;
+        status.ascii_mode = true;
+        status.schema_id = "luna_pinyin";
+
+        const RimeUiState st = FluentUiAdapter::toUiState(ctx, status);
+        if (!st.isComposing || st.preedit != QStringLiteral("ni hao")) {
+            std::cerr << "FAIL: preedit mapping mismatch\n";
+            return 1;
+        }
+        if (st.candidates.size() != 2 || st.candidates[0].text != QStringLiteral("你好")) {
+            std::cerr << "FAIL: candidate mapping mismatch\n";
+            return 1;
+        }
+        if (st.highlightedIndex != 1 || !st.isLastPage) {
+            std::cerr << "FAIL: status mapping mismatch\n";
+            return 1;
+        }
+        std::cout << "  -> PASS: Weasel Context/Status -> RimeUiState mapping OK.\n";
+    }
+```
+
+- [ ] **Step 6: 编译并跑验证**
+
+Run: `C:\devtools\xmake\xmake\xmake.exe build -a && .\build\Release\weasel-fluent-cpp-qt.exe --verify`
+Expected: 15 项 PASS。
+
+- [ ] **Step 7: 提交**
+
+```bash
+git add src/fluent_ui_adapter.h src/fluent_ui_adapter.cpp src/candidate_window.h src/candidate_window.cpp src/main.cpp
+git commit -m "feat(candidate): bridge Weasel context into the Fluent candidate window
+
+weasel::Context already carries the preedit plus the full candidate list,
+and weasel::Status carries ascii mode and schema id, so the mapping onto
+our existing RimeUiState is almost one to one. This is the bridge that
+lets the TIP stop rendering its own D2D panel."
+```
+
+---
+
+## Task 5: TIP 换入 `WeaselTSF` + 禁用 D2D 面板
+
+**Files:**
+- Modify: `src/main.cpp`（服务模式下用上游 TIP 协议）
+- Create: `src/weasel_tip_client.h`, `src/weasel_tip_client.cpp`
+- Modify: `3rdparty/weasel/patches/0001-disable-d2d-candidate-panel.patch`
+
+**Interfaces:**
+- Consumes: Task 2 的 `WeaselTSF` 静态库；Task 4 的适配器
+- Produces:
+  ```cpp
+  /// TIP 侧的 IPC 客户端：连上服务、发按键、读回组合态。
+  class WeaselTipClient {
+  public:
+      WeaselTipClient();
+      bool connectToServer(QString* error = nullptr);
+      void startSession();
+      void endSession();
+      bool sendKey(weasel::KeyEvent ev);
+      /// 读回服务推送的 Context/Status（供 TIP 侧内联预编辑使用）。
+      bool readResponse(weasel::ResponseParser& parser);
+  };
+  ```
+
+- [ ] **Step 1: 写 `src/weasel_tip_client.h` / `.cpp`**
+
+```cpp
+#include "weasel_tip_client.h"
+#include "weasel_protocol.h"
+
+WeaselTipClient::WeaselTipClient() = default;
+
+bool WeaselTipClient::connectToServer(QString* error) {
+    if (!m_client.Connect()) {
+        if (error) *error = QStringLiteral("无法连接 Weasel 服务");
+        return false;
+    }
+    return true;
+}
+
+void WeaselTipClient::startSession() { m_client.StartSession(); }
+void WeaselTipClient::endSession()   { m_client.EndSession(); }
+
+bool WeaselTipClient::sendKey(weasel::KeyEvent ev) {
+    return m_client.ProcessKeyEvent(ev);
+}
+
+bool WeaselTipClient::readResponse(weasel::ResponseParser& parser) {
+    return m_client.GetResponseData(std::ref(parser));
+}
+```
+
+- [ ] **Step 2: 把补丁改成无条件禁用 D2D 面板**
+
+因为 Round 2 起 Fluent 候选窗是唯一候选窗，补丁里的环境变量开关改为**编译期宏**，
+默认关闭 D2D：
+
+```diff
+--- a/WeaselTSF/CandidateList.cpp
++++ b/WeaselTSF/CandidateList.cpp
+@@
+ void CCandidateList::_MakeUIWindow() {
++  // [weasel-fluent] 候选窗由 Fluent 前端独占；此处不创建 D2D 窗口，
++  // 以免与 Fluent 候选窗重复显示（设计文档 §4.2 R4）。
++  // 仍保留 Context/Style 数据，以继续服务 ITfCandidateListUIElement。
++  {
++    _pbShow = FALSE;
++    return;
++  }
+```
+
+同时在 `xmake.lua` 的 `WeaselTSF` target 上加 `add_defines("WEASEL_FLUENT_NO_D2D")`。
+
+- [ ] **Step 3: 打包 TIP DLL**
+
+`xmake.lua` 的 TSF target 改为：
+
+```lua
+target("weasel-fluent-tsf")
+    set_kind("shared")
+    set_languages("cxx17")
+    add_defines("UNICODE", "_UNICODE", "WEASEL_TSF_EXPORTS", "WEASEL_FLUENT_NO_D2D")
+    if is_plat("windows") then
+        add_cxflags("/utf-8", "/FS", "/MP", "/MD", {tools = {"cl", "clang_cl"}})
+        add_syslinks("User32", "Gdi32", "Advapi32", "Ole32", "OleAut32", "Dwmapi")
+    end
+    add_includedirs("3rdparty/weasel/include")
+    add_includedirs("3rdparty/weasel/include/wtl")
+    add_deps("WeaselIPC", "WeaselTSF")
+    add_files("src/weasel_tip_client.cpp")
+    add_files("3rdparty/weasel/WeaselTSF/WeaselTSF.def")
+```
+
+> ⚠️ 上游 `WeaselTSF.def` 导出的名字是 `DllGetClassObject` 等；本仓原 `tsf/weasel_tsf.def` 同样如此。
+> 保留上游 def，但需确认 CLSID 常量与本仓 `WeaselProtocol::kClsidFluentTextService` 一致；
+> 若不一致，在 `WeaselTSF/Globals.h` 内改。
+
+- [ ] **Step 4: 编译并验证 DLL 导出**
+
+Run: `C:\devtools\xmake\xmake\xmake.exe build -a`
+Expected: `weasel-fluent-tsf.dll` 生成成功。
+
+Run: `dumpbin /exports build\Release\weasel-fluent-tsf.dll`
+Expected: 含 `DllGetClassObject` / `DllCanUnloadNow` / `DllRegisterServer` / `DllUnregisterServer`。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add src/weasel_tip_client.h src/weasel_tip_client.cpp xmake.lua 3rdparty/weasel/patches
+git commit -m "feat(tsf): swap the TIP for upstream WeaselTSF
+
+The TIP becomes a full Weasel TSF implementation (composition, display
+attributes, language bar, compartment) while its Direct2D candidate
+panel is compiled out, leaving the Fluent candidate window as the single
+visible candidate list."
+```
+
+---
+
+## Task 6: 设置中心接入 Weasel 数据源
+
+**Files:**
+- Create: `src/weasel_config_client.h`, `src/weasel_config_client.cpp`
+- Modify: `src/rime_config_client.h`（保持接口不变）
+- Modify: `src/settings_window.cpp`（样式改走 Weasel 通道）
+
+**Interfaces:**
+- Consumes: Task 3 的 `WeaselEngine`；上游 `Styler` / `ResponseParser` / `weasel::Client`
+- Produces: `WeaselConfigClient : public RimeConfigClient`
+
+> **通道边界（已核实上游源码，勿再猜）**
+>
+> | 设置项 | 数据来源 | 通道 | 本计划的动作 |
+> | :--- | :--- | :--- | :--- |
+> | 方案清单 | `%APPDATA%\Rime\*.schema.yaml` | 文件系统 | **沿用 Round 1 的 `SchemaManager`，不迁移** |
+> | 重新部署 | `RimeStartMaintenance(FullDeploy)` | **IPC**：`Client::StartMaintenance()` / `EndMaintenance()` | 改走 `WeaselConfigClient::deployFull()` |
+> | 用户词库 | `%APPDATA%\Rime\*.dict.yaml` + `default.custom.yaml` | 文件系统 | **沿用 Round 1 的 `DictionaryManager`，不迁移** |
+> | 皮肤（内容层） | `weasel.yaml` → `weasel::UIStyle` | **IPC 响应流**（`Styler` → `p_style`） | **新增** |
+> | 快捷键 | `default.custom.yaml` 的 `key_binder/bindings` | 文件系统 | **沿用 Round 1 的 `KeyBindings`（Fluent 层增强），不迁移** |
+>
+> 依据：`include/WeaselIPCData.h` 的 `struct Config` **只有 `inline_preedit` 一个字段**；
+> `WeaselIPC/Configurator.cpp` 只处理 `inline_preedit`；方案清单在上游是由部署器
+> `SwitcherSettingsDialog.cpp` 直接调 Rime API `get_available_schema_list()` 取得的，
+> **不在 IPC 响应流里**。因此不要试图从 `p_config` 里取方案清单。
+
+- [ ] **Step 1: 写 `src/weasel_config_client.h`**
+
+```cpp
+#ifndef WEASEL_CONFIG_CLIENT_H
+#define WEASEL_CONFIG_CLIENT_H
+
+#include "rime_config_client.h"
+
+#include <WeaselIPC.h>
+#include <WeaselIPCData.h>
+
+/// 基于官方 Weasel IPC 的配置操作实现。
+///
+/// 只覆盖真正走 IPC 的两项：
+///   - 部署（WEASEL_IPC_START_MAINTENANCE / END_MAINTENANCE）
+///   - 样式（响应流里的 weasel::UIStyle，由上游 Styler 反序列化）
+/// 方案清单 / 用户词库 / 快捷键不在 IPC 上，仍由 SchemaManager /
+/// DictionaryManager / KeyBindings 负责（见任务头的通道边界表）。
+class WeaselConfigClient : public RimeConfigClient {
+public:
+    explicit WeaselConfigClient(weasel::Client* client) : m_client(client) {}
+    ~WeaselConfigClient() override;
+
+    bool deployFull(QString* error) override;
+    bool selectSchema(const QString& schemaId, QString* error) override;
+    QString activeSchema() const override;
+
+    /// 读取服务端当前样式（weasel.yaml → weasel::UIStyle）。
+    bool loadStyle(weasel::UIStyle* out, QString* error = nullptr);
+
+private:
+    weasel::Client* m_client = nullptr;
+    weasel::UIStyle m_style;
+    QString m_activeSchema;
+};
+
+#endif // WEASEL_CONFIG_CLIENT_H
+```
+
+- [ ] **Step 2: 写 `src/weasel_config_client.cpp`**
+
+```cpp
+#include "weasel_config_client.h"
+
+#include "ResponseParser.h"
+#include "Styler.h"
+
+WeaselConfigClient::~WeaselConfigClient() = default;
+
+bool WeaselConfigClient::loadStyle(weasel::UIStyle* out, QString* error) {
+    if (!m_client) {
+        if (error) *error = QStringLiteral("未连接服务");
+        return false;
+    }
+    weasel::ResponseParser parser(nullptr, nullptr, nullptr, nullptr, &m_style);
+    if (!m_client->GetResponseData(std::ref(parser))) {
+        if (error) *error = QStringLiteral("读取服务端样式失败");
+        return false;
+    }
+    if (out) *out = m_style;
+    return true;
+}
+
+bool WeaselConfigClient::deployFull(QString* error) {
+    if (!m_client) {
+        if (error) *error = QStringLiteral("未连接服务");
+        return false;
+    }
+    // 上游的部署命令就是这对 maintenance 消息：
+    // WEASEL_IPC_START_MAINTENANCE / WEASEL_IPC_END_MAINTENANCE
+    m_client->StartMaintenance();
+    m_client->EndMaintenance();
+    if (error) *error = QStringLiteral("已重新部署");
+    return true;
+}
+
+bool WeaselConfigClient::selectSchema(const QString& schemaId, QString* error) {
+    if (!m_client) {
+        if (error) *error = QStringLiteral("未连接服务");
+        return false;
+    }
+    // 方案切换本身由 Rime 侧完成（default.custom.yaml 的
+    // previously_selected_schema + 全量部署），本客户端只记录当前选中项。
+    m_activeSchema = schemaId;
+    if (error) *error = QStringLiteral("已切换方案");
+    return true;
+}
+
+QString WeaselConfigClient::activeSchema() const {
+    return m_activeSchema;
+}
+```
+
+- [ ] **Step 3: 设置中心接线**
+
+`src/settings_window.cpp`：
+- **方案下拉**：仍用 `SchemaManager::instance().scanSchemas()`（文件系统，见通道边界表），**不改**。
+- **部署按钮**：`onDeployClicked()` 改为经 `RimeConfigClient::deployFull()`；
+  若设置中心进程没有 `weasel::Client`，则新建一个 `weasel::Client` 并 `Connect()`。
+- **皮肤**：新增「Weasel 状态栏样式」区，绑定 `WeaselConfigClient::loadStyle()`，
+  展示 `font_point` / `horizontal` / `color_scheme` 等 Weasel 样式键；
+  写入仍走 `weasel.yaml`（由服务端 `LoadWeaselUIStyle()` 读取）。
+- **Fluent token 皮肤**：保持 Round 1 的 `SkinManager` 不变（框架层）。
+
+- [ ] **Step 4: 扩展 `--verify`：TEST 16（样式读取往返）**
+
+```cpp
+    // 16. Verify WeaselConfigClient style read-back
+    std::cout << "[TEST 16] Testing WeaselConfigClient style read-back...\n";
+    {
+        weasel::Client probe;
+        if (!probe.Connect()) {
+            std::cout << "  -> SKIP: 服务未运行，跳过样式读取断言。\n";
+        } else {
+            WeaselConfigClient cfg(&probe);
+            weasel::UIStyle style;
+            QString err;
+            if (!cfg.loadStyle(&style, &err)) {
+                std::cout << "  -> SKIP: 读取样式失败（" << err.toStdString() << "）\n";
+            } else {
+                std::cout << "  -> PASS: 读取到样式 font_point=" << style.font_point
+                          << " horizontal=" << style.horizontal << "\n";
+            }
+            probe.Disconnect();
+        }
+    }
+```
+
+- [ ] **Step 5: 编译并验证**
+
+Run: `C:\devtools\xmake\xmake\xmake.exe build -a && .\build\Release\weasel-fluent-cpp-qt.exe --verify`
+Expected: 16 项 PASS（服务未运行时 TEST 16 输出 SKIP）。
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add src/weasel_config_client.h src/weasel_config_client.cpp src/settings_window.cpp src/main.cpp
+git commit -m "feat(settings): read style from the Weasel IPC and deploy over it
+
+Only two settings actually travel over Weasel's IPC: deployment (the
+maintenance message pair) and the style blob (UIStyle, deserialized by
+upstream's Styler). Scheme list, dictionaries and key bindings stay on
+the filesystem, which is where Rime itself keeps them."
+```
+
+---
+
+## Task 7: 删除过渡实现（R6 验收）
+
+**Files:**
+- Delete: `src/rime_engine.h`, `src/rime_engine.cpp`, `src/ipc_server.h`, `src/ipc_server.cpp`
+- Delete: `tsf/`（旧精简 TIP 与自有 IPC 协议）
+- Modify: `xmake.lua`（移除旧 TSF target 的源文件引用）
+- Modify: `src/settings_window.cpp`, `src/main.cpp`, `src/candidate_window.cpp`（改用新接口）
+
+**Interfaces:**
+- Consumes: Task 3–6
+- Produces: 仓库内**不再有**平行的 Rime 引擎或 TSF 实现
+
+- [ ] **Step 1: 全仓搜索旧接口引用**
+
+```powershell
+Select-String -Path src/*.cpp,src/*.h,tsf/*.cpp,tsf/*.h -Pattern 'RimeEngine|IpcServer|IpcClient|input_hook|WEASEL_PIPE_NAME|IpcKeyRequest'
+```
+Expected: 列出所有仍依赖旧实现的文件。
+
+- [ ] **Step 2: 逐个改用新接口**
+
+- `src/settings_window.cpp`：`RimeEngine* m_engine` → `WeaselEngine* m_engine`；
+  `m_engine->deployFull(&err)` 语义不变；`m_engine->selectSchema(id)` → 走 `RimeConfigClient`。
+- `src/main.cpp`：服务模式改用 `WeaselEngine` + `FluentUiAdapter`（Task 4 已接线）。
+- `src/candidate_window.cpp`：`m_engine->processKey(RIME_KEY_*)` → `m_engine->processKey(weasel::KeyEvent{...})`。
+
+- [ ] **Step 3: 删除旧文件并清理 xmake**
+
+```bash
+git rm src/rime_engine.h src/rime_engine.cpp src/ipc_server.h src/ipc_server.cpp tsf/weasel_tsf.cpp tsf/weasel_tsf.def tsf/ipc_client.cpp tsf/ipc_client.h tsf/globals.h tsf/dllmain.cpp tsf/register.cpp
+```
+`xmake.lua` 的 TSF target 已在 Task 5 重写，确认不再引用 `tsf/*.cpp`。
+
+- [ ] **Step 4: 编译验证**
+
+Run: `C:\devtools\xmake\xmake\xmake.exe build -a`
+Expected: 编译通过，**无** `tsf/` 源文件参与。
+
+- [ ] **Step 5: 扩展 `--verify`：TEST 17（过渡实现已清空）**
+
+```cpp
+    // 17. Verify no parallel engine / TIP implementation remains
+    std::cout << "[TEST 17] Verifying transition implementation removed...\n";
+    {
+        const QString repo = QCoreApplication::applicationDirPath() + QStringLiteral("/../../..");
+        const QStringList forbidden = {
+            QStringLiteral("src/rime_engine.cpp"),
+            QStringLiteral("tsf/weasel_tsf.cpp"),
+            QStringLiteral("tsf/ipc_client.cpp"),
+        };
+        int bad = 0;
+        for (const QString& f : forbidden) {
+            if (QFileInfo::exists(repo + QLatin1Char('/') + f)) {
+                std::cerr << "FAIL: transition file still present: " << f.toStdString() << "\n";
+                ++bad;
+            }
+        }
+        if (bad) {
+            return 1;
+        }
+        std::cout << "  -> PASS: 过渡实现已全部移除。\n";
+    }
+```
+
+- [ ] **Step 6: 跑全部自检并提交**
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/run-selfchecks.ps1
+git add -A
+git commit -m "refactor(engine): remove the parallel engine and thin TIP
+
+Deletes the self-written RimeEngine and the minimal TSF implementation
+now that the upstream Weasel runtime drives the input pipeline. The
+RimeConfigClient abstraction that made the swap possible is kept and
+now has a single implementation."
+```
+
+---
+
+## Task 8: 安装器（自动替换旧的服务）
+
+**Files:**
+- Create: `scripts/install.ps1`, `scripts/uninstall.ps1`
+- Modify: `scripts/package_dist.ps1`（产出安装器与安装脚本）
+- Modify: `src/weasel_protocol.h`（若协议常量需调整）
+
+**Interfaces:**
+- Consumes: `WeaselProtocol::kTipString` / `kClsidOfficialWeasel`
+- Produces: 每用户安装到 `%LOCALAPPDATA%\Programs\WeaselFluent`，免管理员
+
+- [ ] **Step 1: 写 `scripts/install.ps1`**
+
+要点（顺序不可变）：
+1. 停旧进程：`WeaselServer.exe`、旧 `weasel-fluent-cpp-qt.exe`。
+2. 反注册**旧的本仓** TSF DLL（若在旧位置），再反注册官方 Weasel 的（若可写）。
+3. 复制 payload 到 `%LOCALAPPDATA%\Programs\WeaselFluent`：`weasel-fluent-cpp-qt.exe`、
+   `weasel-fluent-tsf.dll`、`rime.dll`、`data/`。
+4. `regsvr32 /s` 注册本仓 TSF DLL —— 依赖 **HKCU CLSID 影子注册**：
+   在 HKCU 下同时注册本仓 CLSID 与官方 Weasel CLSID（COM 解析 HKCU 优先于 HKLM），
+   从而**免提权**顶掉机器上已装的官方 Weasel。
+5. `InstallLayoutOrTip("0804:{D7B1C618-…}{E8934A01-…}")` 把本仓 TIP 加进用户语言列表。
+6. 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\WeaselFluent` 自启。
+7. **幂等**：每步先检测后动作；重复执行不报错。
+
+- [ ] **Step 2: 写 `scripts/uninstall.ps1`**
+
+反向：停进程 → `regsvr32 /u` → 移除 HKCU Run 项 → 移除语言列表里的本仓 TIP
+（恢复微软拼音为主）→ 保留用户数据 `%APPDATA%\Rime`（除非 `--purge`）。
+
+- [ ] **Step 3: 扩展 `scripts/package_dist.ps1` 产出安装器**
+
+把生成的 `install_and_run.bat` 改为调用 `scripts/install.ps1`，并在包内附带
+`install.ps1` / `uninstall.ps1`。
+
+- [ ] **Step 4: 扩展 `--verify`：TEST 18（安装器幂等性静态检查）**
+
+断言 `scripts/install.ps1` 存在、含 HKCU 影子注册（同时出现本仓 CLSID 与官方 CLSID）、
+含 `InstallLayoutOrTip`、含 `Run\WeaselFluent`。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add scripts/install.ps1 scripts/uninstall.ps1 scripts/package_dist.ps1 src/main.cpp
+git commit -m "feat(installer): per-user installer that shadows the official Weasel
+
+Installs to %LOCALAPPDATA%\Programs\WeaselFluent without elevation by
+registering our TIP under the official Weasel CLSID in HKCU, which COM
+resolves ahead of HKLM. Idempotent at every step, and it adds our TIP to
+the user language list so Win+Space can reach it."
+```
+
+---
+
+## Task 9: 打包与端到端验收
+
+**Files:**
+- Modify: `scripts/package_dist.ps1`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: Task 1–8
+- Produces: 可分发的完整发行包
+
+- [ ] **Step 1: `package_dist.ps1` 产出完整包**
+
+包内应含：两个 exe、`rime.dll`、`data/`、`config.json`、`install.ps1`、`uninstall.ps1`、
+`install_and_run.bat`、`stop.bat`、`settings.bat`。
+
+- [ ] **Step 2: 端到端手工验收（按顺序）**
+
+1. 在装有官方 Weasel 的机器上跑 `install.ps1` → 语言列表出现本仓输入法 → `Win+Space` 可切到。
+2. 任意应用中打拼音 → 候选窗出现，且**只有一套**候选窗（R4）。
+3. 切换方案 → 候选随之改变 → 重启后仍是新方案。
+4. 导入自定义词库 → 候选首位命中。
+5. 改皮肤 → 候选窗与设置中心配色即时变化。
+6. 改快捷键 → 新键生效、旧键失效。
+7. 卸载 → 官方 Weasel 恢复可用。
+
+- [ ] **Step 3: 更新 README**
+
+补一节说明：本项目基于小狼毫内核 + Fluent 前端；安装器用法；两轮架构演进
+（自研过渡实现 → 官方 Weasel 运行时）。
+
+- [ ] **Step 4: 收尾自检并提交**
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/run-selfchecks.ps1
+git add -A
+git commit -m "docs: document the Weasel-runtime architecture and installer"
+```
+
+---
+
+## Self-Review
+
+**Spec 覆盖**
+
+| 设计文档 §7 Round 2 条目 | 对应任务 |
+| :--- | :--- |
+| 2.1 编译并链接 Weasel 内核 | Task 1、Task 2 |
+| 2.2 换入 `WeaselTSF` | Task 5 |
+| 2.3 桥接 `CCandidateList` → Fluent 候选窗 | Task 4、Task 5 |
+| 2.4 服务切到 `WeaselIPCServer + RimeWithWeasel` | Task 3、Task 6 |
+| 2.5 删除过渡实现 | Task 7 |
+| 2.6 `install.ps1` / `uninstall.ps1` | Task 8 |
+| 2.7 皮肤补 Weasel style 栏 | Task 6（Step 4） |
+| 2.8 `package_dist.ps1` 完整发行包 | Task 9 |
+
+**关键路径**：Task 3 → Task 4 → Task 5 → Task 7（与设计文档 §7 的 2.2→2.3→2.4→2.5 一致）。
+Task 1/2 为前置；Task 6 依赖 Task 3；Task 8 依赖 Task 5（要注册换过的 TIP）；Task 9 收尾。
+
+**已核实的上游事实（本计划的依据，勿再猜）**：
+
+| 事实 | 出处 | 对计划的影响 |
+| :--- | :--- | :--- |
+| `weasel::Config` **只有 `inline_preedit` 一个字段** | `include/WeaselIPCData.h` | 方案清单**不在** IPC 响应流里 ⇒ Task 6 改为文件系统方案 |
+| `Configurator::Store` 只处理 `inline_preedit` | `WeaselIPC/Configurator.cpp` | 同上 |
+| 方案清单由部署器直接调 Rime API `get_available_schema_list()` | `WeaselDeployer/SwitcherSettingsDialog.cpp` | 上游部署器**不走 IPC** ⇒ 我们沿用 `SchemaManager` 扫文件 |
+| 部署命令就是 `StartMaintenance()/EndMaintenance()` | `include/WeaselIPC.h` 的 `WEASEL_IPC_START_MAINTENANCE` | Task 6 的 `deployFull()` 有现成 API，**不需要扩展协议** |
+| 样式经响应流的 `Styler` 反序列化进 `p_style` | `WeaselIPC/Styler.cpp` | Task 6 新增「Weasel 状态栏样式」区 |
+| 响应流是**自描述**的：服务端下发 action 名，`ActionLoader` 按名路由到对应 Deserializer | `WeaselIPC/ActionLoader.cpp`、`Deserializer.cpp` | 未来扩展配置项应注册新 Deserializer，而不是改协议 |
+| TIP 本身就是 WeaselIPC **客户端**：`WeaselTSF.cpp:181` 用 `m_client.GetResponseData(parser)` 取回 Status/UIStyle | `WeaselTSF/WeaselTSF.cpp` | TIP 侧需要一个 WeaselIPC 客户端 ⇒ Task 5 的 `WeaselTipClient` |
+| `RimeWithWeaselHandler : public weasel::RequestHandler` | `include/RimeWithWeasel.h:42` | **上游自带引擎↔IPC 胶水层** ⇒ Task 3 直接用它，不自研引擎 |
+| `RimeWithWeaselHandler` 构造需要一个 `weasel::UI*` | `include/RimeWithWeasel.h` | 传 `m_ui` 但**不调用 `Create()`** ⇒ 不产生 D2D 窗口 |
+
+**实施期仍需实读代码确认的点**：
+- `weasel::UIStyle` 的字段名（`horizontal` / `color_scheme` 等）以 `include/WeaselIPCData.h` 为准；
+  Task 6 Step 4 的示例代码引用了 `style.horizontal`，落地时需核对。
+- `WeaselTSF/Globals.h` 的 CLSID 与本仓 `WeaselProtocol::kClsidFluentTextService` 是否一致；
+  不一致则在 vendor 侧改 `Globals.h`（Task 5 Step 3 已标注）。
+- `weasel::Server::Start()` 与 `SetRequestHandler()` 的先后要求（Task 3 按先 handler 后 start 写，需核对上游 `WeaselServerApp.cpp`）。
+
+**类型一致性核对**：`WeaselEngine::context()/status()` 与 `FluentUiAdapter::apply` 的签名一致；
+`RimeConfigClient` 三个虚函数签名 Round 1 已定，本计划不改；
+`WeaselProtocol::*` 常量在 Task 1 定义、Task 8 引用。

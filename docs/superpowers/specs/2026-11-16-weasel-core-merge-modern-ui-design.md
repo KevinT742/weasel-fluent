@@ -190,6 +190,32 @@ Fluent Qt 实现**，因此：
   我们的 Fluent 候选窗降级为备用 —— 但这会违反「保留 Fluent 候选窗」的前提，
   需重新走一次设计评审。
 
+### 4.4 配置数据的通道边界（已核实上游源码）
+
+合并 Weasel 内核后，「设置中心能改哪些东西、走哪条通道」必须先定死，否则会出现两套真相：
+
+| 设置项 | 数据来源 | 通道 | 责任方 |
+| :--- | :--- | :--- | :--- |
+| 方案清单 | `%APPDATA%\Rime\*.schema.yaml` | 文件系统 | `SchemaManager`（本仓，Round 1 已实现） |
+| 重新部署 | `RimeStartMaintenance(FullDeploy)` | **IPC**：`START_MAINTENANCE` / `END_MAINTENANCE` | `WeaselConfigClient` |
+| 用户词库 | `%APPDATA%\Rime\*.dict.yaml` + `default.custom.yaml` | 文件系统 | `DictionaryManager`（Round 1 已实现） |
+| 皮肤（内容层） | `weasel.yaml` → `weasel::UIStyle` | **IPC 响应流**（上游 `Styler`） | `WeaselConfigClient`（Round 2 新增） |
+| 皮肤（框架层） | Fluent token 覆盖文件 | 文件系统（`UserTheme::filePath()`） | `SkinManager`（Round 1 已实现） |
+| 快捷键 | `default.custom.yaml` 的 `key_binder/bindings` | 文件系统 | `KeyBindings`（Round 1 已实现，Fluent 层增强） |
+
+**核实依据**：
+
+- `include/WeaselIPCData.h` 的 `struct Config` **只有 `inline_preedit` 一个字段**，
+  `WeaselIPC/Configurator.cpp` 也只处理它 ⇒ **方案清单不在 IPC 响应流里**。
+- 上游部署器 `WeaselDeployer/SwitcherSettingsDialog.cpp` 直接调 Rime API
+  `get_available_schema_list()` ⇒ 方案清单走**文件系统**，不是 IPC。
+- 部署命令确实是 IPC 的 `WEASEL_IPC_START_MAINTENANCE` / `END_MAINTENANCE`。
+- IPC 响应流是**自描述**的：服务端下发 action 名，`ActionLoader` 按名路由到对应
+  `Deserializer` ⇒ 未来扩展配置项应**注册新 Deserializer**，而不是改协议。
+
+**推论**：Round 1 已实现的 `SchemaManager` / `DictionaryManager` / `KeyBindings` / `SkinManager`
+**不需要重写**，Round 2 只需补上「部署」与「Weasel 样式」两条 IPC 通道。
+
 ---
 
 ## 5. Vendor 清单与依赖
