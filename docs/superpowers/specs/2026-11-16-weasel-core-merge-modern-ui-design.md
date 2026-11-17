@@ -47,7 +47,10 @@
 ### 1.2 非目标
 
 - 不重写 librime；不引入新的拼音引擎或词库算法。
-- 不引入官方 `WeaselUI/`（Direct2D 候选面板）—— 候选窗归本仓的 Fluent 实现，理由见 §4.3。
+- 不引入官方 `WeaselUI/` 的 **Direct2D 候选面板**（候选窗归本仓的 Fluent 实现，理由见 §4.3）。
+  ⚠️ Round 2 实测修正：`WeaselUI/` **模块本身必须 vendor 并编译** —— `WeaselTSF` 的
+  `CCandidateList` 持有 `std::unique_ptr<weasel::UI>`，没有它 TIP 连编译都过不了；
+  它只作**数据载体**（承载 Context/Status），D2D 面板窗口永不创建。
 - 不追求 WinUI 3 / XAML 技术栈；设计语言是 **Fluent**，实现技术栈是 **Qt6 + Fluent-Qt**。
 - 不实现 TSF 的 `ITfComposition` 内联预编辑（推迟至 Round 2，见 §7）。
 - 不引入 Rime 之外的插件体系。
@@ -171,7 +174,9 @@ Windows 应用 ─TSF─> 本仓精简 tsf/ ─IPC(自有协议)─> 本仓 Flue
 - **R2** Fluent 侧**不得**直接调用 librime C API；一切经 Weasel IPC 客户端。
 - **R3** 设置中心**不得**直接写 `%APPDATA%\Rime`；配置变更经 Weasel `Configurator`/`Styler`/`ActionLoader`。
 - **R4** 候选窗渲染**不得**同时存在两套实现。本项目**保留 Fluent Qt 候选窗**，
-  因此**官方 `WeaselUI/`（D2D 面板）不引入**，接 `WeaselTSF` 时必须走 §4.3 的桥接。
+  因此**官方 `WeaselUI/` 的 D2D 面板永不创建**，接 `WeaselTSF` 时必须走 §4.3 的桥接。
+  ⚠️ Round 2 实测修正：`WeaselUI/` 模块**必须引入**（`WeaselTSF` 编译期依赖），
+  但只作数据载体 —— 用上游补丁 0001 去掉 `_ui->Create()`，面板窗口不存在。
 - **R5** 所有路径必须经统一解析函数；**禁止**出现 `C:/Users/<用户名>` 或绝对盘符字面量（可用 `scripts/verify-no-hardcoded-paths.ps1` 自检）。
 - **R6**（新增）**过渡实现必须可被整体删除**：`src/rime_engine.*` 与 `tsf/` 只能通过
   `RimeConfigClient` 抽象层被调用；一旦官方运行时接管，删除它们不应波及 `src/` 其余部分。
@@ -181,11 +186,13 @@ Windows 应用 ─TSF─> 本仓精简 tsf/ ─IPC(自有协议)─> 本仓 Flue
 Weasel 的 `CCandidateList` 内部持有 `weasel::UI`（D2D 面板）。**已裁决：候选窗保留本仓的
 Fluent Qt 实现**，因此：
 
-- **不引入** `WeaselUI/`；`WeaselTSF` 的候选列表后端替换为**指向 Fluent 候选窗的桥接**。
+- **`WeaselUI/` 的 D2D 面板永不创建**（Round 2 实测：模块必须引入作编译期依赖，只作数据载体）；
+  `WeaselTSF` 的候选列表后端替换为**指向 Fluent 候选窗的桥接**。
 - 桥接方向固定为 **WeaselTSF → Fluent 候选窗**（而非反向）：TSF 侧仍负责组合态、
   候选同步、光标定位等 IME 语义；Fluent 侧只负责渲染与交互。
 - 迁移顺序：先让 `WeaselTSF` 的数据流跑通（经 WeaselIPC），再把 `CCandidateList` 的
-  `_ui` 换成桥接实现，最后删除 `WeaselUI` 依赖。
+  `_ui` 换成桥接实现。**不需要**删除 `WeaselUI` 依赖 —— 它是编译期必需的，
+  只需要保证它的面板窗口不被创建（上游补丁 0001）。
 - 若桥接在 Round 2 内无法收敛，**降级方案**是让 `WeaselTSF` 走 Weasel 自带 D2D 面板、
   我们的 Fluent 候选窗降级为备用 —— 但这会违反「保留 Fluent 候选窗」的前提，
   需重新走一次设计评审。
@@ -230,8 +237,8 @@ Fluent Qt 实现**，因此：
 | `WeaselIPC/` | ✅ 全量 | 客户端：`Configurator`、`Styler`、`ActionLoader`、`Committer`、`ContextUpdater`、`ResponseParser`、`PipeChannel` |
 | `WeaselIPCServer/` | ✅ 全量 | 服务端：`WeaselServerImpl`、`SecurityAttribute` |
 | `RimeWithWeasel/` | ✅ 全量 | librime 封装 + `WeaselUtility` |
-| `WeaselTSF/` | 🔶 Round 2 采纳 | 完整 TSF（组合态 / 候选列表 / 显示属性 / 语言栏 / Compartment）。接入前须完成 §4.3 桥接；**不连带引入 `WeaselUI/`** |
-| `WeaselUI/` | ❌ 明确不采纳 | D2D 候选面板。候选窗保留本仓 Fluent 实现（R4），故整个模块不引入 |
+| `WeaselTSF/` | ✅ Round 2 采纳 | 完整 TSF（组合态 / 候选列表 / 显示属性 / 语言栏 / Compartment）。**上游 `Register.cpp` 不编译**，注册由本仓 `tip/weasel_tsf_register.cpp` 做（HKCU 逐用户，免提权） |
+| `WeaselUI/` | ✅ 必须引入（仅数据载体） | ⚠️ Round 2 实测修正：`WeaselTSF` 的 `CCandidateList` 持有 `std::unique_ptr<weasel::UI>`，没有它 TIP 编译不过。但**它的 D2D 面板窗口永不创建**（上游补丁 0001 去掉 `_ui->Create()`），候选窗仍只由本仓 Fluent 实现渲染（R4） |
 | `WeaselDeployer/` | ❌ | 老 Win32 对话框，被 Fluent 设置中心取代（方案/词库/皮肤/快捷键 四项已一一对应） |
 | `WeaselServer/` | ❌ | 老托盘 + 老服务外壳，被本仓服务取代（仅参考 `WeaselTrayIcon` 行为） |
 | `WeaselSetup/` | ❌ | Round 2 重写为 `scripts/install.ps1`（§6.6） |
@@ -342,19 +349,28 @@ Fluent Qt 实现**，因此：
 
 1. 停旧进程：`WeaselServer.exe`、旧 `weasel-fluent-cpp-qt.exe`。
 2. 反注册官方 Weasel TIP（若存在，`regsvr32 /u`），清 `HKLM\SOFTWARE\Microsoft\CTF\TIP\{A3F4CDED-…}`（若可写）。
-3. 复制 payload：`weasel-fluent-cpp-qt.exe`、`weasel-fluent-tsf.dll`、`rime.dll`、`data/`。
-4. `regsvr32` 注册本仓 TSF DLL（HKCU，免提权）— 依赖 `tsf/register.cpp` 现有的 **HKCU CLSID 影子注册**（覆盖官方 Weasel CLSID）。
-5. 把 `0804:{D7B1C618-9F3E-4E7B-B96E-5C13D1A5B4C2}{E8934A01-C349-4F8A-8512-14AE0293BD01}` 加入用户语言列表（`InstallLayoutOrTip`）。
+3. 复制 payload：`weasel-fluent-cpp-qt.exe`、`weasel-fluent-tsf.dll`、`rime.dll`、`data/`、`start_service.bat`。
+4. 注册本仓 TSF DLL（HKCU，免提权）— 走 `tip/weasel_tsf_register.cpp` 的 **HKCU CLSID 影子注册**（覆盖官方 Weasel CLSID `{A3F4CDED-…}`）。
+5. 写 `HKCU\Software\Rime\Weasel\WeaselRoot` = 安装目录（TIP 用它找 `start_service.bat` 拉起本仓服务；见上游补丁 0002）。
 6. 写 `HKCU\...\Run\WeaselFluent` 自启。
 7. **幂等**：可重复执行，每步先检测后动作。
 
-`scripts/uninstall.ps1`：泛化现有 `scripts/restore_official_weasel.ps1`（去除硬编码路径），补齐语言列表还原。
+> **修订（Round 2 T5 实测）**：本节原第 5 步是「把 `0804:{D7B1C618-…}{E8934A01-…}` 加入用户语言列表」，**已作废**。
+> 上游 `WeaselTSF::OnActivated` 只接管 `clsid == c_clsidTextService`（恒为官方 `{A3F4CDED-…}`），
+> 用本仓自己的 CLSID 注册的话，TSF 会加载 DLL 但 TIP 直接变成空壳。
+> 改为**用官方 CLSID 做 HKCU 影子注册**后，官方安装早已写进用户语言列表的
+> `0804:{A3F4CDED-…}{3D02CAB6-…}` 条目**直接生效**，不必再动语言列表。
+> 另外本仓的 IPC 管道名与官方隔离（`WeaselFluentNamedPipe`），因此官方
+> `WeaselServer.exe` 即使还在跑也不会抢管道 —— 但仍建议按第 1 步停掉它。
+
+`scripts/uninstall.ps1`：泛化现有 `scripts/restore_official_weasel.ps1`（去除硬编码路径），删掉 HKCU 影子注册项即可让官方 Weasel 恢复。
 
 ### 6.7 优化：替换托盘方案，使用系统输入法切换
 
 - **托盘职责收缩**：不再是切换入口，只保留「当前模式状态指示 / 重新部署 / 设置中心 / 关于 / 退出」。
 - **切换归属系统**：
-  - 输入法选择 → Windows 自带 `Win+Space`（本仓 TSF 已注册进语言列表，§6.6 步骤 5）。
+  - 输入法选择 → Windows 自带 `Win+Space`（本仓 TSF 已通过 HKCU 影子注册顶替官方 Weasel 的
+    TIP 条目，用户语言列表里原有的 `0804:{A3F4CDED-…}{3D02CAB6-…}` 直接生效，§6.6）。
   - 中↔英 → `Shift`，状态经 TIP 的 `GUID_COMPARTMENT_KEYBOARD_OPENCLOSE` 同步给系统语言栏（机制已存在于 `tsf/weasel_tsf.cpp:191-205`），Windows 显示正确的模式指示。
 - **菜单现代化**：用 Fluent-Qt `menus_toolbars` 组件重写（当前 `src/main.cpp:926-941` 是原生 `QMenu`），保持 Fluent 视觉语言与键盘可达性。
 - **可选隐藏**：`config.json` 增加 `show_tray`（默认 `true`），允许纯系统切换的用户彻底隐藏托盘。
@@ -382,7 +398,7 @@ Fluent Qt 实现**，因此：
 | :-- | :--- | :-- |
 | 2.1 | 编译并链接 Weasel 内核：Boost 1.88（`vc143` 绕过 VS18 探测）+ `WeaselIPC`/`WeaselIPCServer`/`RimeWithWeasel` 静态库进主程序 | `xmake build` 通过；服务进程实际使用 Weasel 的引擎封装 |
 | 2.2 | 换入 `WeaselTSF`（内联预编辑 / 语言栏 / 显示属性 / Compartment） | 系统语言栏显示正确模式；中英状态与系统同步 |
-| 2.3 | **桥接 `CCandidateList` → Fluent 候选窗**（§4.3，方向固定 WeaselTSF → Fluent） | 候选窗只出现一次（R4）；不引入 `WeaselUI` |
+| 2.3 | **桥接 `CCandidateList` → Fluent 候选窗**（§4.3，方向固定 WeaselTSF → Fluent） | 候选窗只出现一次（R4）；`WeaselUI` 只作数据载体，D2D 面板不出现 |
 | 2.4 | 服务进程切到 `WeaselIPCServer + RimeWithWeasel`；`RimeConfigClient` 的实现换成 Weasel 版 | 删除自研 `RimeEngine` 后 `src/` 其余部分不受影响（R6） |
 | 2.5 | **删除过渡实现**：`src/rime_engine.*` 与精简 `tsf/` 退役 | 全仓不再有平行 TSF 实现 |
 | 2.6 | `scripts/install.ps1` / `uninstall.ps1`（§6.6） | 在装有官方 Weasel 的机器上一键替换成功（HKCU CLSID 影子注册，免提权） |
@@ -483,6 +499,29 @@ Fluent Qt 实现**，因此：
 **对 Round 1 已交付代码的影响**：无。Round 1 交付内容（路径治理、去 rime-ice、
 四个设置功能真做、Fluent 托盘菜单、GPLv3）与本修正完全兼容；
 `RimeConfigClient` 抽象层正是为 §4.3 的切换点预留的。
+
+### 第 2 次修订 —— 2026-11-17 · Round 2 实测修正（T4 / T5）
+
+**修正动因**：Round 2 的 T4（桥接）、T5（TIP 换入上游 `WeaselTSF`）落地时，
+实测推翻了三条设计层面的假设，逐条回写。
+
+| 位置 | 原表述 | 实测结论 |
+| :--- | :--- | :--- |
+| §1.2 / §4.2 R4 / §4.3 / §5.1 / §7 | 「不引入官方 `WeaselUI/`」 | **`WeaselUI/` 必须 vendor 并编译** —— `WeaselTSF` 的 `CCandidateList` 持有 `std::unique_ptr<weasel::UI>`，没有它 TIP 编译不过。它只作**数据载体**（承载 Context/Status），D2D 面板窗口永不创建（上游补丁 0001 去掉 `_ui->Create()`）。R4 的实质「候选窗只出现一次」**不变** |
+| §6.6 步骤 5 | 「把 `0804:{D7B1C618-…}{E8934A01-…}` 加入用户语言列表」 | **作废**。上游 `WeaselTSF::OnActivated` 只接管 `clsid == c_clsidTextService`，而它恒为**官方** `{A3F4CDED-…}`；用本仓自己的 CLSID 注册的话，TSF 会加载 DLL 但 `OnActivated` 直接返回，**TIP 变空壳**。改为**官方 CLSID + HKCU 影子注册**后，官方安装早已写进语言列表的条目**直接生效**，不必再动语言列表 |
+| §6.6 步骤 4 | 「依赖 `tsf/register.cpp` 现有的 HKCU CLSID 影子注册」 | 上游 `WeaselTSF/Register.cpp` 写 `HKEY_CLASSES_ROOT`（= HKLM）且用机器级的 `ITfInputProcessorProfileMgr::RegisterProfile` → **要管理员**，破坏「每用户免提权」。故**不编译上游 Register.cpp**，注册由本仓 `tip/weasel_tsf_register.cpp` 用 HKCU + 逐用户 API 实现 |
+
+**另外两条边界事实**（已写入相应章节）：
+
+1. **IPC 管道名必须与官方隔离**：上游硬编码 `WeaselNamedPipe`；机器上已装的官方
+   `WeaselServer.exe` 会占住同一个命名管道 → 本仓服务 bind 失败。改为
+   `WeaselFluentNamedPipe`（上游补丁 0002 + `build_defines/weasel_fluent_defines.h` 强制包含），
+   **主程序与 TIP 两端必须一致**。
+2. **服务端的 `weasel::Context` 不携带组合态光标**：光标只存在于 TIP 响应协议
+   （`ctx.preedit.cursor=start,end,cursor`）里。桥接层的 `cursorPos` 只能按
+   「光标在预编辑串末尾」推导。
+
+**未改动**：§2 现状基线、§3 许可证、§6.1–6.3 / §6.5 / §6.7 的功能设计、§10 附录。
 
 ---
 

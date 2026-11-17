@@ -288,7 +288,15 @@ void CLangBarItemButton::SetLangbarStatus(DWORD dwStatus, BOOL fSet) {
 
 std::wstring WeaselTSF::_GetRootDir() {
   std::wstring dir{};
-  RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(), L"WeaselRoot", dir);
+  // [weasel-fluent] 每用户安装：先查 HKCU（安装器写在这里），再退回 HKLM
+  // （官方 Weasel 装在机器上时用的是 HKLM）。
+  if (RegGetStringValue(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel",
+                        L"WeaselRoot", dir) != ERROR_SUCCESS ||
+      dir.empty()) {
+    dir.clear();
+    RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(), L"WeaselRoot",
+                      dir);
+  }
   return dir;
 }
 
@@ -297,8 +305,15 @@ void WeaselTSF::_HandleLangBarMenuSelect(UINT wID) {
   switch (wID) {
     case ID_WEASELTRAY_RERUN_SERVICE:
     case ID_WEASELTRAY_INSTALLDIR:
-      if (RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(),
-                            L"WeaselRoot", dir) == ERROR_SUCCESS) {
+      // [weasel-fluent] 同 _GetRootDir()：HKCU 优先，HKLM 兜底。
+      if (RegGetStringValue(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel",
+                            L"WeaselRoot", dir) != ERROR_SUCCESS ||
+          dir.empty()) {
+        dir.clear();
+        RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(),
+                          L"WeaselRoot", dir);
+      }
+      if (!dir.empty()) {
         if (wID == ID_WEASELTRAY_RERUN_SERVICE) {
           std::thread th([dir]() {
             ShellExecuteW(NULL, L"open", (dir + L"\\start_service.bat").c_str(),

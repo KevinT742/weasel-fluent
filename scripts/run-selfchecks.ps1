@@ -35,6 +35,10 @@ Invoke-Check 'license' {
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\verify-license.ps1')
 }
 
+Invoke-Check 'tip-dll' {
+    powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\verify-tip-dll.ps1')
+}
+
 # The test suite needs the built executable and the Qt runtime on PATH.
 $exeCandidates = @(
     (Join-Path $RepoRoot 'build\Release\weasel-fluent-cpp-qt.exe'),

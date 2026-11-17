@@ -7,7 +7,12 @@
 #include <KeyEvent.h>
 
 #define WEASEL_IPC_WINDOW L"WeaselIPCWindow_1.0"
+// [weasel-fluent] 允许在编译期覆盖管道名。本仓与官方 Weasel 共存时若用同一个
+// 管道名，机器上已装的 WeaselServer.exe 会占住管道，本仓的服务就起不来。
+// 覆盖方式见 build_defines/weasel_fluent_defines.h（通过 /FI 强制包含）。
+#ifndef WEASEL_IPC_PIPE_NAME
 #define WEASEL_IPC_PIPE_NAME L"WeaselNamedPipe"
+#endif
 
 #define WEASEL_IPC_METADATA_SIZE 1024
 #define WEASEL_IPC_BUFFER_SIZE (4 * 1024)

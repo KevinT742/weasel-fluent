@@ -79,6 +79,28 @@ T1 执行中撞到三条与计划假设不符的事实，已回写：
 
 > 注：T4 的 `Step 4（引擎回调 → 适配器接线）` 暂未落到 `main.cpp` 的服务模式 —— 那里当前仍是自研 `RimeEngine`，与 `WeaselEngine` 并存会争抢 librime 全局单例。接线随 **T7 的切换**一起做。
 
+### T5 执行记录（2026-11-17，已完成）
+
+| 计划原假设 | 实际情况 |
+| :--- | :--- |
+| 需要新建 `src/weasel_tip_client.{h,cpp}` 封装 `weasel::Client` | **多余**。上游 `WeaselTSF` 自带 `weasel::Client m_client`（`WeaselTSF.h:230`），TIP 侧的 IPC 客户端本来就在 vendor 里（`WeaselIPC/WeaselClientImpl.cpp`）。不新建任何 TIP 客户端 |
+| 用本仓自己的 CLSID `{D7B1C618-…}` 注册（Step 3 提示「若不一致就在 Globals.h 内改」） | **行不通**。上游 `WeaselTSF/Globals.cpp` 的 `c_clsidTextService` **就是官方的** `{A3F4CDED-…}`，而 `WeaselTSF::OnActivated` 只在 `clsid == c_clsidTextService` 时接管。换成别的 CLSID → TSF 把 DLL 加载起来但 `OnActivated` 直接 `return S_OK`，**整个 TIP 变空壳**。⇒ 改为**官方 CLSID + HKCU 影子注册**（`HKCU\Software\Classes\CLSID` 优先于 `HKLM`，正是设计 §6.6 想要的「免提权顶掉官方 Weasel」）。连带作废：设计文档 §6.6 第 5 步「往语言列表加 `0804:{D7B1C618-…}`」——官方安装已写好的 `0804:{A3F4CDED-…}{3D02CAB6-…}` 条目直接生效 |
+| 上游 `WeaselTSF/Register.cpp` 可以直接用 | **不能**。它写 `HKEY_CLASSES_ROOT`（= HKLM）且用 `ITfInputProcessorProfileMgr::RegisterProfile`（机器级）→ **要管理员**，破坏「每用户免提权」安装。⇒ **不编译上游 Register.cpp**（`xmake.lua` 里 `remove_files`），改用本仓 `tip/weasel_tsf_register.cpp`：HKCU + `ITfInputProcessorProfiles::AddLanguageProfile/EnableLanguageProfile`（逐用户），实现上游 `Register.h` 声明的同名 6 个函数，因此上游 `Server.cpp` 不用改 |
+| 补丁改成「编译期宏无条件禁用 D2D」 | **已满足**：补丁 0001 本身就是无条件去掉 `_ui->Create()`，不需要再引入 `WEASEL_FLUENT_NO_D2D` |
+| — | **管道名必须与官方隔离**：上游硬编码 `WEASEL_IPC_PIPE_NAME = L"WeaselNamedPipe"`，机器上已装的官方 `WeaselServer.exe` 会占住同一个命名管道 → 本仓服务 bind 失败。新增补丁 **0002** 把该宏改成 `#ifndef` 守卫，用 `/FIweasel_fluent_defines.h`（`build_defines/`）强制包含覆盖为 `WeaselFluentNamedPipe`。**主程序与 TIP 两端都要覆盖**（管道名不一致就连不上） |
+| — | **补丁 0002 还修了 `_GetRootDir()`**：上游只查 HKLM 的 `Software\Rime\Weasel\WeaselRoot`，每用户安装拿不到自己的安装目录（也就找不到 `start_service.bat`，TIP 无法拉起我们的服务）。改为 **HKCU 优先、HKLM 兜底**（语言栏的「重新启动服务 / 打开安装目录」同样处理） |
+| — | **`xmake` 的 `del_files` 已废弃**（会打印 deprecation 警告），要用 `remove_files` |
+| — | **`src/*.cpp` 通配会吞掉 TIP 侧源码**：主程序目标用 `add_files("src/*.cpp")`，把 `src/weasel_tsf_register.cpp` 也编进了主 exe（缺 include 路径 → `C1083: 无法打开包括文件 "stdafx.h"`；就算编过也会重复符号）。⇒ TIP 侧源码单独放 **`tip/`** 目录，不在 `src/` 下 |
+| — | **TSF 类别 GUID（`GUID_TFCAT_*`）由 SDK 的 `uuid.lib` 提供**：`msctf.h` 只是 `EXTERN_C const GUID` 声明，SDK 里**没有** `msctf.lib`（实测 `Lib/10.0.26100.0/um/x64` 下无此文件）⇒ 必须 `add_syslinks("uuid")` |
+| — | `ITfInputProcessorProfiles` **没有** `UnregisterLanguageProfile`，逐用户移除要用 `RemoveLanguageProfile` |
+
+产出：
+- `weasel-fluent-tsf.dll` 由**上游 WeaselTSF 源码**编译而成（`dumpbin /exports` 已确认导出 `DllGetClassObject` / `DllCanUnloadNow` / `DllRegisterServer` / `DllUnregisterServer`）。
+- 新增 `tip/weasel_tsf_register.cpp`（逐用户注册）、`build_defines/weasel_fluent_defines.h`（管道名覆盖）、补丁 `0002-isolated-ipc-pipe-and-per-user-root.patch`。
+- 新增自检 `scripts/verify-tip-dll.ps1`（导出表 + 两端管道名一致 + 上游 Register.cpp 确实被排除），已挂进 `scripts/run-selfchecks.ps1`。
+
+> ⚠️ **T5 之后 TIP 还不可用**：新 TIP 说的是**上游 Weasel IPC 协议**，而服务端此时仍在跑自研的 `src/ipc_server.cpp`（自定义二进制协议 + `WeaselFluentNamedPipe` 自定义管道）。两端协议必须**同时**切换 —— 这就是 **T7** 的活（服务端换成 `WeaselEngine`，并删掉 `src/rime_engine.*` 与旧 `tsf/`）。在 T7 之前不要把这个 DLL 装到机器上。
+
 ---
 
 ## File Structure

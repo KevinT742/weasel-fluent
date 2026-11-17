@@ -1,0 +1,56 @@
+diff --git a/3rdparty/weasel/WeaselTSF/LanguageBar.cpp b/3rdparty/weasel/WeaselTSF/LanguageBar.cpp
+index 41d8f0d..249c996 100644
+--- a/3rdparty/weasel/WeaselTSF/LanguageBar.cpp
++++ b/3rdparty/weasel/WeaselTSF/LanguageBar.cpp
+@@ -288,7 +288,15 @@ void CLangBarItemButton::SetLangbarStatus(DWORD dwStatus, BOOL fSet) {
+ 
+ std::wstring WeaselTSF::_GetRootDir() {
+   std::wstring dir{};
+-  RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(), L"WeaselRoot", dir);
++  // [weasel-fluent] 每用户安装：先查 HKCU（安装器写在这里），再退回 HKLM
++  // （官方 Weasel 装在机器上时用的是 HKLM）。
++  if (RegGetStringValue(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel",
++                        L"WeaselRoot", dir) != ERROR_SUCCESS ||
++      dir.empty()) {
++    dir.clear();
++    RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(), L"WeaselRoot",
++                      dir);
++  }
+   return dir;
+ }
+ 
+@@ -297,8 +305,15 @@ void WeaselTSF::_HandleLangBarMenuSelect(UINT wID) {
+   switch (wID) {
+     case ID_WEASELTRAY_RERUN_SERVICE:
+     case ID_WEASELTRAY_INSTALLDIR:
+-      if (RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(),
+-                            L"WeaselRoot", dir) == ERROR_SUCCESS) {
++      // [weasel-fluent] 同 _GetRootDir()：HKCU 优先，HKLM 兜底。
++      if (RegGetStringValue(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel",
++                            L"WeaselRoot", dir) != ERROR_SUCCESS ||
++          dir.empty()) {
++        dir.clear();
++        RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(),
++                          L"WeaselRoot", dir);
++      }
++      if (!dir.empty()) {
+         if (wID == ID_WEASELTRAY_RERUN_SERVICE) {
+           std::thread th([dir]() {
+             ShellExecuteW(NULL, L"open", (dir + L"\\start_service.bat").c_str(),
+diff --git a/3rdparty/weasel/include/WeaselIPC.h b/3rdparty/weasel/include/WeaselIPC.h
+index 7eaecd6..147bdf7 100644
+--- a/3rdparty/weasel/include/WeaselIPC.h
++++ b/3rdparty/weasel/include/WeaselIPC.h
+@@ -7,7 +7,12 @@
+ #include <KeyEvent.h>
+ 
+ #define WEASEL_IPC_WINDOW L"WeaselIPCWindow_1.0"
++// [weasel-fluent] 允许在编译期覆盖管道名。本仓与官方 Weasel 共存时若用同一个
++// 管道名，机器上已装的 WeaselServer.exe 会占住管道，本仓的服务就起不来。
++// 覆盖方式见 build_defines/weasel_fluent_defines.h（通过 /FI 强制包含）。
++#ifndef WEASEL_IPC_PIPE_NAME
+ #define WEASEL_IPC_PIPE_NAME L"WeaselNamedPipe"
++#endif
+ 
+ #define WEASEL_IPC_METADATA_SIZE 1024
+ #define WEASEL_IPC_BUFFER_SIZE (4 * 1024)

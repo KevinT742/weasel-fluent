@@ -88,6 +88,8 @@ end
 -- Vendored Weasel（GPLv3）—— 详见 3rdparty/weasel/UPSTREAM.md
 add_includedirs("3rdparty/weasel/include")
 add_includedirs("3rdparty/weasel/include/wtl")
+-- 本仓专属的编译期宏（通过 /FI 强制包含），见 build_defines/weasel_fluent_defines.h
+add_includedirs("build_defines")
 
 -- ---------------------------------------------------------------------------
 -- Weasel 内核静态库
@@ -108,7 +110,12 @@ local weasel_cxflags = {"/utf-8", "/GS", "/Gy", "/EHsc", "/Zc:wchar_t", "/Zc:for
 -- /FI 必须 force=true，否则 xmake 会把它当未知参数「自动忽略」（只打印一行警告），
 -- 于是 guiddef.h / coguid.h 根本没被强制包含，症状是 atlcomcli.h 里
 -- 「GUID_NULL: 未声明的标识符」。
-local weasel_force_include = {"/FIguiddef.h", "/FIcoguid.h"}
+--
+-- /FIweasel_fluent_defines.h：把 IPC 管道名从上游的 WeaselNamedPipe 改成
+-- WeaselFluentNamedPipe。不改的话，机器上已装的官方 WeaselServer.exe 会占住
+-- 同一个命名管道，本仓的服务 bind 失败（而且两端管道名必须一致，
+-- 所以主程序与 TIP 都要强制包含同一个头）。
+local weasel_force_include = {"/FIguiddef.h", "/FIcoguid.h", "/FIweasel_fluent_defines.h"}
 
 target("WeaselIPC")
     set_kind("static")
@@ -187,8 +194,13 @@ target("WeaselTSF")
     end
     add_includedirs("3rdparty/weasel/include")
     add_includedirs("3rdparty/weasel/include/wtl")
+    add_includedirs("3rdparty/weasel/WeaselTSF")
     add_deps("WeaselIPC", "WeaselUI")
     add_files("3rdparty/weasel/WeaselTSF/*.cpp")
+    -- 上游的 Register.cpp 写 HKEY_CLASSES_ROOT（= HKLM），需要管理员权限；
+    -- 本仓是「每用户、免提权」安装（设计文档 §6.6），故由
+    -- tip/weasel_tsf_register.cpp 取代它（见该文件顶部说明）。
+    remove_files("3rdparty/weasel/WeaselTSF/Register.cpp")
     add_syslinks("advapi32", "user32", "ole32", "oleaut32", "dwmapi")
 
 -- Target: FluentQt (Static Library)
@@ -334,16 +346,33 @@ target("weasel-fluent-cpp-qt")
     end)
 
 -- Target: weasel-fluent-tsf (Windows TSF COM TIP DLL)
+--
+-- Round 2 起：TIP 由**上游 WeaselTSF** 编译而成（本仓自研的精简 tsf/ 退役，
+-- 见 Task 7）。导出的 4 个入口沿用上游的 WeaselTSF.def。
+--
+-- 注册逻辑不走上游的 Register.cpp（它写 HKLM、要管理员），改用本仓的
+-- tip/weasel_tsf_register.cpp（HKCU 逐用户）。
 target("weasel-fluent-tsf")
     set_kind("shared")
     set_languages("cxx17")
-    add_defines("UNICODE", "_UNICODE", "WEASEL_TSF_EXPORTS")
+    add_defines(weasel_defines)
+    add_defines("WEASEL_TSF_EXPORTS", "INITGUID")
     if is_plat("windows") then
-        add_cxflags("/utf-8", "/FS", "/MP", {tools = {"cl", "clang_cl"}})
+        add_cxflags(weasel_cxflags, {tools = {"cl", "clang_cl"}})
+        add_cxflags(weasel_force_include, {force = true, tools = {"cl", "clang_cl"}})
         add_syslinks("User32", "Gdi32", "Advapi32", "Ole32", "OleAut32", "Dwmapi")
+        -- TSF 类别 GUID（GUID_TFCAT_*）由 SDK 的 uuid.lib 提供
+        add_syslinks("uuid")
     end
-    add_files("tsf/*.cpp")
-    add_files("tsf/weasel_tsf.def")
+    add_includedirs("3rdparty/weasel/include")
+    add_includedirs("3rdparty/weasel/include/wtl")
+    add_includedirs("3rdparty/weasel/WeaselTSF")
+    add_deps("WeaselIPC", "WeaselUI", "WeaselTSF")
+    -- Boost：weasel::Client（WeaselIPC）用到 boost::archive / boost::thread
+    add_linkdirs("deps/boost_1_88_0/stage/lib")
+    add_links("boost_thread", "boost_serialization", "boost_system", "boost_atomic")
+    add_files("tip/*.cpp")
+    add_files("3rdparty/weasel/WeaselTSF/WeaselTSF.def")
 
     after_build(function (target)
         local targetfile = target:targetfile()
