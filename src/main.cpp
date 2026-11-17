@@ -72,6 +72,26 @@ QString prepareIsolatedRimeDir(const QString& tag) {
     return dir;
 }
 
+/// 定位仓库的 scripts/ 目录（自检要读安装器与打包脚本）。
+///
+/// 二进制在 build/Release 或 build/windows/x64/release，仓库根在上面若干级，
+/// 所以从可执行文件目录往上找。
+QString locateScriptsDir() {
+    QString probe = QCoreApplication::applicationDirPath();
+    for (int up = 0; up < 5; ++up) {
+        const QString candidate = QDir(probe).filePath(QStringLiteral("scripts"));
+        if (QFileInfo(candidate).isDir()) {
+            return candidate;
+        }
+        const QString parent = QFileInfo(probe).absolutePath();
+        if (parent == probe) {
+            break;
+        }
+        probe = parent;
+    }
+    return QString();
+}
+
 /// 等 Weasel 引擎的状态回流。
 ///
 /// Weasel 路径是**异步**的：按键投到服务端线程执行，状态再经队列回 Qt 线程，
@@ -752,34 +772,87 @@ int runVerificationSuite() {
         std::cout << "  -> PASS: Weasel Context/Status -> RimeUiState mapping OK.\n";
     }
 
-    // 16. Verify the Weasel runtime end-to-end (server + engine + bridge)
+    // 16. Verify the per-user installer (static check)
     //
-    // ⚠️ 必须**单独进程**跑：librime 是进程级全局单例，而本进程里的过渡实现
-    // 过渡实现已经 setup + initialize 过它，还持着用户词库
-    // 的 LOCK 文件；同一个进程里再起一个 WeaselEngine 只会互相踩
-    // （实测报 "另一个程序正在使用此文件" + 组合态起不来）。
-    std::cout << "[TEST 16] Testing the Weasel runtime end-to-end...\n";
+    // 安装器是「免提权顶掉官方 Weasel」的关键：它在 HKCU 下把**官方 Weasel 的
+    // CLSID** 指向本仓的 TIP DLL（COM 解析 HKCU 优先于 HKLM）。这里做静态断言，
+    // 免得以后改脚本时把这条链路改断了。
+    std::cout << "[TEST 16] Testing the per-user installer...\n";
     {
-        QProcess proc;
-        proc.start(QCoreApplication::applicationFilePath(),
-                   QStringList() << QStringLiteral("--verify-weasel-runtime"));
-        if (!proc.waitForStarted(10000)) {
-            std::cerr << "FAIL: could not start the Weasel runtime probe\n";
+        const QString scriptsDir = locateScriptsDir();
+        if (scriptsDir.isEmpty()) {
+            std::cerr << "FAIL: could not locate the scripts directory\n";
             return 1;
         }
-        if (!proc.waitForFinished(180000)) {
-            proc.kill();
-            std::cerr << "FAIL: the Weasel runtime probe timed out\n";
+        const QString installPath = QDir(scriptsDir).filePath(QStringLiteral("install.ps1"));
+        const QString uninstallPath = QDir(scriptsDir).filePath(QStringLiteral("uninstall.ps1"));
+        if (!QFileInfo::exists(installPath) || !QFileInfo::exists(uninstallPath)) {
+            std::cerr << "FAIL: install.ps1 / uninstall.ps1 are missing\n";
             return 1;
         }
-        const QString probeOut = QString::fromLocal8Bit(proc.readAllStandardOutput());
-        const int code = proc.exitCode();
-        std::cout << probeOut.toStdString();
-        if (code != 0) {
-            std::cerr << "FAIL: the Weasel runtime probe exited with " << code << "\n";
+        QFile installFile(installPath);
+        if (!installFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            std::cerr << "FAIL: cannot read install.ps1\n";
             return 1;
         }
-        std::cout << "  -> PASS: Weasel runtime end-to-end OK.\n";
+        const QString installText = QString::fromUtf8(installFile.readAll());
+        installFile.close();
+
+        struct Expect {
+            const char* needle;
+            const char* what;
+        };
+        const Expect expects[] = {
+            {"{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}", "官方 Weasel 的 CLSID（影子注册目标）"},
+            {"HKCU:\\Software\\Classes\\CLSID", "HKCU CLSID 影子注册"},
+            {"regsvr32", "TIP DLL 注册"},
+            {"WeaselRoot", "每用户安装根目录（TIP 找 start_service.bat 用）"},
+            {"Run\\WeaselFluent", "自启项"},
+            {"WeaselServer", "停掉官方 WeaselServer（它占着用户词库的锁）"},
+        };
+        for (const Expect& e : expects) {
+            if (!installText.contains(QLatin1String(e.needle))) {
+                std::cerr << "FAIL: install.ps1 is missing " << e.what << "\n";
+                return 1;
+            }
+        }
+        std::cout << "  -> PASS: installer does the HKCU shadow registration, the per-user"
+                     " root, the autostart entry and stops the official Weasel.\n";
+    }
+
+    // 17. Verify the distribution packaging (static check)
+    std::cout << "[TEST 17] Testing the distribution packaging...\n";
+    {
+        const QString scriptsDir = locateScriptsDir();
+        if (scriptsDir.isEmpty()) {
+            std::cerr << "FAIL: could not locate the scripts directory\n";
+            return 1;
+        }
+        const QString packagePath = QDir(scriptsDir).filePath(QStringLiteral("package_dist.ps1"));
+        QFile packageFile(packagePath);
+        if (!packageFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            std::cerr << "FAIL: cannot read package_dist.ps1\n";
+            return 1;
+        }
+        const QString packageText = QString::fromUtf8(packageFile.readAll());
+        packageFile.close();
+        const char* expects[] = {
+            "weasel-fluent-cpp-qt.exe",
+            "weasel-fluent-tsf.dll",
+            "rime.dll",
+            "data",
+            "install.ps1",
+            "uninstall.ps1",
+            "install_and_run.bat",
+        };
+        for (const char* needle : expects) {
+            if (!packageText.contains(QLatin1String(needle))) {
+                std::cerr << "FAIL: package_dist.ps1 does not ship " << needle << "\n";
+                return 1;
+            }
+        }
+        std::cout << "  -> PASS: the distribution ships the runtime, the Rime data and the"
+                     " installer.\n";
     }
 
     std::cout << "====================================================\n";

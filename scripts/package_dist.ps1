@@ -26,6 +26,18 @@ if (-not (Test-Path $ExeSrc)) {
 Copy-Item $ExeSrc -Destination "$DistDir\weasel-fluent-cpp-qt.exe" -Force
 Write-Host "[1/7] Copied weasel-fluent-cpp-qt.exe" -ForegroundColor Green
 
+# 1b. Copy the TSF TIP DLL (the TSF front end that talks to the service)
+$TsfDllSrc = "$ProjectDir\build\Release\weasel-fluent-tsf.dll"
+if (-not (Test-Path $TsfDllSrc)) {
+    $TsfDllSrc = "$ProjectDir\build\windows\x64\release\weasel-fluent-tsf.dll"
+}
+if (Test-Path $TsfDllSrc) {
+    Copy-Item $TsfDllSrc -Destination "$DistDir\weasel-fluent-tsf.dll" -Force
+    Write-Host "[1/7] Copied weasel-fluent-tsf.dll (TSF TIP)" -ForegroundColor Green
+} else {
+    Write-Host "[1/7] WARNING: weasel-fluent-tsf.dll not found! The IME will not load." -ForegroundColor Red
+}
+
 # 3. Deploy Qt6 Runtime
 $Windeployqt = "C:\Qt\6.8.2\msvc2022_64\bin\windeployqt.exe"
 if (Test-Path $Windeployqt) {
@@ -104,20 +116,17 @@ Write-Host "[6/7] Copied assets and generated default config.json" -ForegroundCo
 $InstallScript = @"
 @echo off
 chcp 65001 >nul
-title Rime Fluent IME - 启动并接管系统输入
+title Weasel-Fluent - 安装并接管系统输入
 echo ===================================================
-echo   正在停止原版 Weasel 服务并启动 Rime Fluent 前端...
+echo   正在安装 Weasel-Fluent（每用户，免管理员）...
 echo ===================================================
 
-taskkill /F /IM WeaselServer.exe 2>nul
-taskkill /F /IM weasel-fluent-cpp-qt.exe 2>nul
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" -PayloadDir "%~dp0"
 
-echo 正在启动 Rime Fluent 输入服务（任务栏托盘驻留）...
-start "" "%~dp0weasel-fluent-cpp-qt.exe"
-
-echo 启动完成！可在任意应用中输入拼音进行打字。
-echo 按 Shift 切换中英文，按 Tab 展开 4 行候选词大矩阵，托盘图标右键可进入设置中心。
-exit
+echo.
+echo 安装完成！可在任意应用中输入拼音进行打字。
+echo 按 Shift 切换中英文，Tab 展开候选词大矩阵，托盘图标右键可进入设置中心。
+pause
 "@
 $InstallScript | Out-File -FilePath "$DistDir\install_and_run.bat" -Encoding utf8
 
@@ -136,7 +145,17 @@ start "" "%~dp0weasel-fluent-cpp-qt.exe" --settings
 "@
 $SettingsScript | Out-File -FilePath "$DistDir\settings.bat" -Encoding utf8
 
-Write-Host "[7/7] Generated control scripts (install_and_run.bat, stop.bat, settings.bat)" -ForegroundColor Green
+# 安装器 / 卸载器：随包分发，每用户免提权安装。
+foreach ($tool in @("install.ps1", "uninstall.ps1")) {
+    $toolSrc = Join-Path $ProjectDir "scripts\$tool"
+    if (Test-Path $toolSrc) {
+        Copy-Item $toolSrc -Destination (Join-Path $DistDir $tool) -Force
+    } else {
+        Write-Host "[7/7] WARNING: $tool not found at $toolSrc" -ForegroundColor Yellow
+    }
+}
+
+Write-Host "[7/7] Generated control scripts (install_and_run.bat, stop.bat, settings.bat, install.ps1, uninstall.ps1)" -ForegroundColor Green
 
 # 9. Compress to zip
 $ZipDst = "$DistBase\weasel-fluent-v1.0.0-windows-x64.zip"

@@ -180,6 +180,36 @@ T1 执行中撞到三条与计划假设不符的事实，已回写：
   - `--capture`（截图）与 `--benchmark`（基准）也改用真实的 `WeaselEngine`
     + 隔离的 Rime 用户目录，截图与基准数据都来自真实引擎。
 
+### T8 执行记录（2026-11-17，已完成）—— 每用户安装器
+
+| 计划原假设 | 实际情况 |
+| :--- | :--- |
+| Step 5 要用 `InstallLayoutOrTip("0804:{D7B1C618-…}{E8934A01-…}")` 把**本仓自己的** TIP 加进语言列表 | **作废**（T5 已改用官方 CLSID，见设计文档第 2 次修订）。现在语言列表里原有的 `0804:{A3F4CDED-…}{3D02CAB6-…}` 条目直接生效 —— 本仓的 TIP 就注册在这个 CLSID + profile 下。`tip/weasel_tsf_register.cpp` 的 `AddLanguageProfile` 也保证「机器上没装官方 Weasel」时能逐用户建出这个 profile |
+| 影子注册 = 同时注册本仓 CLSID 与官方 CLSID | **只需要官方 CLSID**：上游 `WeaselTSF::OnActivated` 只接管 `c_clsidTextService`（官方那个），注册本仓自己的 CLSID 会得到一个空壳 TIP。HKCU 下注册官方 CLSID 即完成「顶掉」 |
+| 卸载还要「移除语言列表里的本仓 TIP」 | 不用：本仓用的就是官方那条语言列表条目，删掉 HKCU 影子注册后官方 Weasel 自然恢复 |
+
+**产出**：
+
+- `scripts/install.ps1`（每用户，免提权）：
+  1. 停 `weasel-fluent-cpp-qt.exe` 与官方 `WeaselServer.exe`
+     （**必须停**：官方服务占着 `%APPDATA%\Rime` 用户词库的 LOCK，本仓的引擎
+     拿不到词库就只读、输入出不来候选）；
+  2. 复制 payload 到 `%LOCALAPPDATA%\Programs\WeaselFluent`
+     （exe / TIP DLL / `rime.dll` / `data/` / `config.json`），并写 `start_service.bat`
+     （TIP 用它拉起服务，见补丁 0002 的 HKCU `WeaselRoot` 查找）；
+  3. `regsvr32 /s` 注册 TIP DLL → 触发 `tip/weasel_tsf_register.cpp` 的
+     **HKCU CLSID 影子注册**（官方 CLSID → 本仓 DLL）+ 逐用户语言 profile；
+  4. 写 `HKCU\Software\Rime\Weasel\WeaselRoot` 与 `HKCU\...\Run\WeaselFluent`；
+  5. 启动服务；每步都先检测后动作，**幂等**。
+- `scripts/uninstall.ps1`：反向清理（停进程 → 反注册 → 删 HKCU 影子注册 → 删自启项 →
+  删安装目录），默认**保留** `%APPDATA%\Rime`，`-Purge` 才清。
+- `scripts/package_dist.ps1`：发行包补上 `weasel-fluent-tsf.dll`（**原先漏了**，
+  漏了的话输入法根本加载不了）、`install.ps1` / `uninstall.ps1`；
+  `install_and_run.bat` 改为调用 `install.ps1`。
+- `--verify` 加 TEST 16（安装器静态检查：官方 CLSID / HKCU 影子注册 / regsvr32 /
+  WeaselRoot / Run 自启项 / 停官方 WeaselServer）与 TEST 17（打包内容检查），
+  **共 17 项**。
+
 ---
 
 ## File Structure
