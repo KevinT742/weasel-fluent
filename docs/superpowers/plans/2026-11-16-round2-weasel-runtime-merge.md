@@ -16,12 +16,14 @@
 - **候选窗只出现一次**（R4）：官方 `WeaselUI/` 的 D2D 面板**不引入**；`WeaselTSF` 必须打补丁禁用其 D2D 渲染。
 - **运行时统一 `/MD`**：本仓 GUI（Qt 官方二进制）、vendor 的 Weasel 静态库**两者一致**。
   ⚠️ 上游 Weasel 用 `/MT`，**本仓不跟随** —— 跟随会导致与 Qt 的 LNK2038 运行库不匹配。
-- **Boost 只用头文件，不链接任何 Boost 库**（T1 实测确认，见下方「T1 执行记录」）。
+- **Boost 必须链接**（T3 实测推翻 T1 的「只用头文件」结论，见「T3 执行记录」）：
+  `boost_thread` / `boost_serialization` / `boost_system` / `boost_atomic`，且 Boost.Thread 需 `BOOST_THREAD_BUILD_LIB`。
+  产物用 `scripts/build_boost_libs.ps1` 直接 cl.exe 编译（b2 在 1.88 上会静默跳过这几个库）。
 - **ATL / WTL**：Weasel 的 `WeaselIPCServer` 用 ATL 的 `CWindowImpl`；WTL 已 vendor 在 `3rdparty/weasel/include/wtl/`。
   ⚠️ **Visual Studio 18 把 ATL/MFC 挪进了工具集目录**：
   `VC/Tools/MSVC/<ver>/atlmfc/{include,lib}`，不再是 VS2022 的 `VC/ATL/`。
 - 本机工具链：Qt `C:\Qt\6.8.2\msvc2022_64`；xmake `C:\devtools\xmake\xmake\xmake.exe`；VS 18（MSVC 19.51，**Boost 需显式 `vc143`**）。
-- 每次提交前跑 `powershell -ExecutionPolicy Bypass -File scripts/run-selfchecks.ps1`（含 `--verify`，Round 1 为 14 项，Round 2 扩到 18 项）。
+- 每次提交前跑 `powershell -ExecutionPolicy Bypass -File scripts/run-selfchecks.ps1`（含 `--verify`，Round 1 为 14 项，Round 2 扩到 18 项；**当前 15 项**）。
 
 ### T1 执行记录（2026-11-17，已完成）
 
@@ -61,6 +63,21 @@ T1 执行中撞到三条与计划假设不符的事实，已回写：
 | — | **`WTL::CAppModule _Module` 要自己提供**：上游由 `WeaselServer/WeaselServer.cpp` 定义、`WeaselIPCServer` 以 extern 引用。本仓取代了 WeaselServer，故在 `src/weasel_module.cpp` 补定义。**它是 WTL 的（`wtl/atlapp.h`）不是 ATL 的** —— VS 18 的 ATL 里已经没有 `atlmod.h`/`CAppModule` |
 
 产出：`WeaselEngine`（`src/weasel_engine.{h,cpp}`）编译并链接通过；`--verify` 14 项仍全绿。
+
+### T4 执行记录（2026-11-17，已完成）
+
+| 计划原假设 | 实际情况 |
+| :--- | :--- |
+| `ctx.cinfo.candies` 是 `std::vector<std::wstring>`，可直接 `QString::fromStdWString` | **`std::vector<weasel::Text>`**（`comments`/`labels` 同）。文本要取 `Text::str`，属性在 `Text::attributes` |
+| `ctx.preedit.cursor` 存在，可直接取光标 | **`weasel::Text` 没有 cursor 字段**。更关键的是：**服务端的 `weasel::Context` 根本不携带组合态光标** —— `RimeWithWeaselHandler::_GetContext` 只填 `preedit.str` 与「选中区」属性（`TextAttribute.range.start/end`），光标只存在于 TIP 响应协议（`ctx.preedit.cursor=start,end,cursor`）里。⇒ 适配器的 `cursorPos` 只能按「光标在预编辑串末尾」推导（属性里若带 `range.cursor` 则优先采用） |
+| `status.schema_id = "luna_pinyin"` | `weasel::Status::schema_id` 是 `std::wstring`，**必须写 `L"luna_pinyin"`** |
+| `candies.push_back(L"你好")` 即可 | `weasel::Text` 只有 `Text(std::wstring const&)` 一个转换构造：`const wchar_t* → std::wstring → Text` 是**两次**用户定义转换，编译期直接拒绝。必须 `weasel::Text(std::wstring(L"你好"))` |
+| `CandidateWindow` 的中英模式读 `m_engine->isAsciiMode()` | **`CandidateWindow::m_engine` 从未被赋值，恒为 nullptr** —— 那行是死代码（菜单恒显示「当前: 中文」）。已改为读桥接推送的 `m_asciiMode`（新增 `setAsciiMode()`/`asciiMode()`），Weasel 路径由 `status.ascii_mode` 驱动 |
+| — | **`--verify` 的失败信息走 `std::cerr`、进度走 `std::cout`**。`std::cout` 是块缓冲，重定向到文件时**进程异常退出会丢掉 stdout 尾部**，而 `std::cerr` 无缓冲反而出现在文件**前部**。排查失败项时必须 stdout/stderr 都看，别被「输出停在 TEST 15」误导成崩溃 |
+
+产出：`src/fluent_ui_adapter.{h,cpp}` + `CandidateWindow::updateFromWeasel/setAsciiMode`；`--verify` 扩到 **15 项**，新增 TEST 15（映射正确性，含「属性带 cursor」「上游不带 cursor 走末尾兜底」「空上下文」三个断言）；`scripts/run-selfchecks.ps1` 全绿。
+
+> 注：T4 的 `Step 4（引擎回调 → 适配器接线）` 暂未落到 `main.cpp` 的服务模式 —— 那里当前仍是自研 `RimeEngine`，与 `WeaselEngine` 并存会争抢 librime 全局单例。接线随 **T7 的切换**一起做。
 
 ---
 

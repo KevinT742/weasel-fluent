@@ -4,6 +4,7 @@
 
 #include "paths.h"
 #include "key_bindings.h"
+#include "fluent_ui_adapter.h"
 #include "ui_glyph_icon.h"
 
 #include <QApplication>
@@ -471,6 +472,19 @@ void CandidateWindow::updateSelectionAnimation(bool animate) {
     m_selectionAnim->setStartValue(0.0);
     m_selectionAnim->setEndValue(1.0);
     m_selectionAnim->start();
+}
+
+void CandidateWindow::updateFromWeasel(const weasel::Context& ctx, const weasel::Status& status) {
+    updateUiState(FluentUiAdapter::toUiState(ctx, status));
+    setAsciiMode(status.ascii_mode);
+}
+
+void CandidateWindow::setAsciiMode(bool ascii) {
+    if (m_asciiMode == ascii) {
+        return;
+    }
+    m_asciiMode = ascii;
+    update();
 }
 
 void CandidateWindow::updateUiState(const RimeUiState& state) {
@@ -1447,12 +1461,14 @@ fluent::menus_toolbars::FluentMenu* CandidateWindow::createExtensionMenu() {
     const QColor iconColor = isDark ? QColor(220, 220, 220) : QColor(50, 50, 50);
 
     // 1. 中/英文模式 (Chinese / English)
-    const bool isAscii = m_engine ? m_engine->isAsciiMode() : false;
+    // 状态来自 Weasel 桥接推送的 status.ascii_mode（自研引擎路径由 RimeEngine::modeChanged 推送）。
+    const bool isAscii = asciiMode();
     auto* actLang = menu->addAction(isAscii ? QStringLiteral("中/英文模式 (当前: 英文)") : QStringLiteral("中/英文模式 (当前: 中文)"));
     actLang->setIcon(createFluentMenuIcon(Typography::Icons::World, iconColor));
     actLang->setCheckable(true);
     actLang->setChecked(!isAscii);
     connect(actLang, &QAction::triggered, this, [this](bool checked) {
+        setAsciiMode(!checked);
         if (m_engine) {
             m_engine->setAsciiMode(!checked);
         }

@@ -25,6 +25,7 @@
 #include "design/Typography.h"
 #include "config.h"
 #include "dictionary_manager.h"
+#include "fluent_ui_adapter.h"
 #include "key_bindings.h"
 #include "paths.h"
 #include "rime_engine.h"
@@ -535,6 +536,67 @@ int runVerificationSuite() {
             return 1;
         }
         std::cout << "  -> PASS: key spec parse/format/match OK.\n";
+    }
+
+    // 15. Verify FluentUiAdapter maps Weasel Context/Status onto RimeUiState
+    std::cout << "[TEST 15] Testing FluentUiAdapter context mapping...\n";
+    {
+        weasel::Context ctx;
+        ctx.preedit.str = L"ni hao";
+        ctx.preedit.attributes.push_back(
+            weasel::TextAttribute(0, 6, weasel::HIGHLIGHTED));
+        ctx.preedit.attributes.back().range.cursor = 3;
+        ctx.cinfo.candies.push_back(weasel::Text(std::wstring(L"\x4F60\x597D")));
+        ctx.cinfo.candies.push_back(weasel::Text(std::wstring(L"\x4F60")));
+        ctx.cinfo.comments.push_back(weasel::Text(std::wstring()));
+        ctx.cinfo.comments.push_back(weasel::Text(std::wstring()));
+        ctx.cinfo.highlighted = 1;
+        ctx.cinfo.currentPage = 0;
+        ctx.cinfo.is_last_page = true;
+
+        weasel::Status status;
+        status.ascii_mode = true;
+        status.schema_id = L"luna_pinyin";
+
+        const RimeUiState st = FluentUiAdapter::toUiState(ctx, status);
+        if (!st.isComposing || st.preedit != QStringLiteral("ni hao")) {
+            std::cerr << "FAIL: preedit mapping mismatch\n";
+            return 1;
+        }
+        if (st.candidates.size() != 2 || st.candidates[0].text != QStringLiteral("你好")) {
+            std::cerr << "FAIL: candidate mapping mismatch\n";
+            return 1;
+        }
+        if (st.highlightedIndex != 1 || !st.isLastPage || st.pageNo != 0) {
+            std::cerr << "FAIL: candidate status mapping mismatch\n";
+            return 1;
+        }
+        if (!st.asciiMode) {
+            std::cerr << "FAIL: ascii mode mapping mismatch\n";
+            return 1;
+        }
+        if (st.cursorPos != 3) {
+            std::cerr << "FAIL: preedit cursor mapping mismatch\n";
+            return 1;
+        }
+
+        // 上游服务端的 weasel::Context 不携带组合态光标（只有 TIP 响应协议里有），
+        // 此时适配器应把光标落在预编辑串末尾。
+        weasel::Context noCursorCtx;
+        noCursorCtx.preedit.str = L"ni hao";
+        const RimeUiState st2 = FluentUiAdapter::toUiState(noCursorCtx, status);
+        if (!st2.isComposing || st2.cursorPos != 6) {
+            std::cerr << "FAIL: preedit cursor fallback mismatch\n";
+            return 1;
+        }
+
+        // 空上下文：既没有组合态也没有候选。
+        const RimeUiState st3 = FluentUiAdapter::toUiState(weasel::Context(), status);
+        if (st3.isComposing || !st3.candidates.isEmpty() || st3.cursorPos != 0) {
+            std::cerr << "FAIL: empty context mapping mismatch\n";
+            return 1;
+        }
+        std::cout << "  -> PASS: Weasel Context/Status -> RimeUiState mapping OK.\n";
     }
 
     std::cout << "====================================================\n";

@@ -7,6 +7,8 @@
 #include "rime_engine.h"
 #include "config.h"
 
+#include <WeaselIPCData.h>
+
 class EmojiPickerWindow;
 class ExtensionPanelWindow;
 
@@ -22,6 +24,18 @@ public:
     ~CandidateWindow() override;
 
     void updateUiState(const RimeUiState& state);
+
+    /// 以官方 Weasel 的组合态刷新候选窗。
+    ///
+    /// 这是「Weasel 内核 → Fluent 候选窗」的桥接入口：服务进程持有的
+    /// weasel::UI 里就是最新的 Context/Status，映射见 FluentUiAdapter。
+    void updateFromWeasel(const weasel::Context& ctx, const weasel::Status& status);
+
+    /// 中/英文模式。Weasel 路径由 status.ascii_mode 推送，
+    /// 自研 RimeEngine 路径由 RimeEngine::modeChanged 推送。
+    void setAsciiMode(bool ascii);
+    bool asciiMode() const { return m_asciiMode; }
+
     void reloadConfig();
     void setPreviewState(const RimeUiState& state);
     QImage renderPreviewImage(qreal dpr = 1.0);
@@ -70,6 +84,7 @@ private:
 
     RimeEngine* m_engine = nullptr;
     RimeUiState m_state;
+    bool m_asciiMode = false;
     EmojiPickerWindow* m_emojiPicker = nullptr;
     ExtensionPanelWindow* m_extensionPanel = nullptr;
 

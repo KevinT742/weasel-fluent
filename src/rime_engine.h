@@ -34,6 +34,9 @@ struct RimeUiState {
     int pageNo = 0;
     bool isLastPage = false;
     QString commitText;
+    /// 中/英文模式。Weasel 路径由 weasel::Status::ascii_mode 提供，
+    /// 自研 RimeEngine 路径由 setAsciiMode() 维护。
+    bool asciiMode = false;
 };
 
 class RimeEngine : public QObject {
