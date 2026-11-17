@@ -89,9 +89,10 @@ if errorlevel 1 exit /b 1
 if not exist b2.exe call bootstrap.bat vc143
 if errorlevel 1 exit /b 1
 b2.exe -j8 ^
+  --with-atomic ^
+  --with-chrono ^
   --with-filesystem ^
   --with-json ^
-  --with-locale ^
   --with-regex ^
   --with-serialization ^
   --with-system ^
@@ -112,15 +113,23 @@ cmd /c $cmdFile
 if ($LASTEXITCODE -ne 0) { throw "Boost build failed with exit code $LASTEXITCODE" }
 
 # --- 5. 验证产物 ---------------------------------------------------------
-$expected = @("boost_thread", "boost_serialization", "boost_system")
+# 只检查真正会产出 .lib 的库。
+#
+# Boost 1.88 起 boost::thread 的通用实现移到了 libs/thread/src/pthread/，
+# 在 Windows 上没有独立的编译单元需要链接；上游 Weasel 因此**一个 Boost 库都不链接**
+# （只把 BOOST_ROOT 加进 include 路径）。thread / chrono / filesystem / json
+# 在本版本同样不产出 .lib，因此不在校验列表里。
+$expected = @("boost_serialization", "boost_system", "boost_atomic")
 $libDir = Join-Path $BoostSrc "stage\lib"
 foreach ($lib in $expected) {
     $hit = Get-ChildItem -Path $libDir -Filter "$lib*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $hit) { throw "Expected library $lib not found in $libDir" }
     Write-Host ("      OK {0} -> {1}" -f $lib, $hit.Name) -ForegroundColor Green
 }
+Write-Host "      note: boost::thread/chrono/filesystem/json 在 Boost 1.88 为 header-only，无 .lib。" -ForegroundColor DarkGray
 
 Write-Host ""
 Write-Host "Boost ready." -ForegroundColor Green
 Write-Host "  BOOST_ROOT = $BoostSrc"
+Write-Host "  headers    = $BoostSrc"
 Write-Host "  link dir   = $libDir"

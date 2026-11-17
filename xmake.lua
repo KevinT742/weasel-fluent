@@ -4,6 +4,137 @@ set_version("1.0.0")
 set_languages("cxx17")
 add_rules("mode.debug", "mode.release")
 
+-- ---------------------------------------------------------------------------
+-- 依赖：Boost（仅头文件）与 ATL
+--
+-- Boost：Boost 1.88 起 boost::thread 在 Windows 上不再产出 .lib（通用实现移到
+-- libs/thread/src/pthread/），上游 Weasel 因此一个 Boost 库都不链接，只把
+-- BOOST_ROOT 加进 include 路径。本仓沿用同一策略：只加头文件路径。
+--
+-- ATL：Weasel 的 WeaselIPCServer 用 ATL 的 CWindowImpl / DECLARE_WND_CLASS，
+-- 需要 ATL 头文件与 atls.lib。
+-- ---------------------------------------------------------------------------
+add_includedirs("deps/boost_1_88_0")
+add_linkdirs("deps/boost_1_88_0/stage/lib")
+
+-- 定位 ATL 头文件与库（Weasel 的 WeaselIPCServer 用 ATL 的 CWindowImpl）。
+--
+-- xmake 3.1 的沙箱既不提供 io/pcall，也不提供 os.execv，因此用 os.files/os.isfile
+-- 在常见安装布局里探测（构建期探测，不是运行期路径）。
+--
+-- ⚠️ Visual Studio 18 把 ATL/MFC 挪到了**工具集目录内**：
+--    VC/Tools/MSVC/<ver>/atlmfc/{include,lib}
+--    而不是 VS2022 的 VC/ATL/include。这也是 Boost 的 msvc.jam 反推
+--    vcvarsall.bat 失败、msvc-setup 步骤崩掉的同一个根因（目录布局变了）。
+-- 去掉路径最后一段（xmake 沙箱里没有 path.dirname，只能用字符串处理）。
+local function strip_last_dir(p)
+    return (p:match("^(.*)[/\\][^/\\]+$")) or p
+end
+
+local function find_atl()
+    local roots = {}
+    for _, env in ipairs({"ProgramFiles", "ProgramFiles(x86)"}) do
+        local v = os.getenv(env)
+        if v and v ~= "" then table.insert(roots, v) end
+    end
+
+    local function probe(include_dir, lib_dir)
+        if os.isfile(path.join(include_dir, "atlbase.h")) then
+            return include_dir, lib_dir
+        end
+        return nil
+    end
+
+    for _, r in ipairs(roots) do
+        for _, ver in ipairs({"18", "2022"}) do
+            for _, ed in ipairs({"Community", "Professional", "Enterprise", "BuildTools"}) do
+                local vsroot = path.join(r, "Microsoft Visual Studio", ver, ed)
+                -- 布局 A（VS 18+）：ATL 在工具集目录内
+                local msvc_root = path.join(vsroot, "VC", "Tools", "MSVC")
+                if os.isdir(msvc_root) then
+                    local hits = os.files(path.join(msvc_root, "*/atlmfc/include/atlbase.h"))
+                    if hits and #hits > 0 then
+                        local inc = strip_last_dir(hits[1])
+                        local lib = path.join(strip_last_dir(inc), "lib", "x64")
+                        local ok_inc, ok_lib = probe(inc, lib)
+                        if ok_inc then
+                            return ok_inc, ok_lib
+                        end
+                    end
+                end
+                -- 布局 B（VS 2022 及更早）：ATL 在 VC/ATL 下
+                local legacy_inc = path.join(vsroot, "VC", "ATL", "include")
+                local legacy_lib = path.join(vsroot, "VC", "ATL", "lib", "x64")
+                local inc, lib = probe(legacy_inc, legacy_lib)
+                if inc then
+                    return inc, lib
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local atl_include, atl_lib = find_atl()
+if atl_include then
+    add_includedirs(atl_include)
+    add_linkdirs(atl_lib)
+    print("ATL include: %s", atl_include)
+    print("ATL lib dir: %s", atl_lib)
+else
+    print("WARNING: ATL include not found; WeaselIPCServer will not compile.")
+end
+
+-- Vendored Weasel（GPLv3）—— 详见 3rdparty/weasel/UPSTREAM.md
+add_includedirs("3rdparty/weasel/include")
+add_includedirs("3rdparty/weasel/include/wtl")
+
+-- ---------------------------------------------------------------------------
+-- Weasel 内核静态库
+--
+-- 三个模块都按 /MD 编译：本仓 GUI 链的是 Qt 官方二进制（/MD），若跟随上游的
+-- /MT 会产生 LNK2038 运行库不匹配。Boost 亦为 /MD（runtime-link=shared）。
+-- ---------------------------------------------------------------------------
+local weasel_defines = {"UNICODE", "_UNICODE", "WINDOWS", "MSVC", "BOOST_ALL_NO_LIB"}
+local weasel_cxflags = {"/utf-8", "/GS", "/Gy", "/EHsc", "/Zc:wchar_t", "/Zc:forScope", "/Zc:inline", "/MD"}
+
+target("WeaselIPC")
+    set_kind("static")
+    set_languages("cxx17")
+    add_defines(weasel_defines)
+    if is_plat("windows") then
+        add_cxflags(weasel_cxflags, {tools = {"cl", "clang_cl"}})
+    end
+    add_includedirs("3rdparty/weasel/include")
+    add_includedirs("3rdparty/weasel/include/wtl")
+    add_files("3rdparty/weasel/WeaselIPC/*.cpp")
+    add_syslinks("advapi32", "user32", "ole32")
+
+target("WeaselIPCServer")
+    set_kind("static")
+    set_languages("cxx17")
+    add_defines(weasel_defines)
+    if is_plat("windows") then
+        add_cxflags(weasel_cxflags, {tools = {"cl", "clang_cl"}})
+    end
+    add_includedirs("3rdparty/weasel/include")
+    add_includedirs("3rdparty/weasel/include/wtl")
+    add_files("3rdparty/weasel/WeaselIPCServer/*.cpp")
+    add_syslinks("advapi32", "user32", "ole32", "atls")
+
+target("RimeWithWeasel")
+    set_kind("static")
+    set_languages("cxx17")
+    add_defines(weasel_defines)
+    if is_plat("windows") then
+        add_cxflags(weasel_cxflags, {tools = {"cl", "clang_cl"}})
+    end
+    add_includedirs("3rdparty/weasel/include")
+    add_includedirs("3rdparty/weasel/include/wtl")
+    add_includedirs("deps/rime/dist/include")
+    add_files("3rdparty/weasel/RimeWithWeasel/*.cpp")
+    add_syslinks("advapi32", "user32", "ole32")
+
 -- Target: FluentQt (Static Library)
 target("FluentQt")
     set_kind("static")
