@@ -14,12 +14,40 @@
 - **路径红线**（设计文档 §4.2 R5）：一律经 `WeaselPaths::*`；`scripts/verify-no-hardcoded-paths.ps1` 必须保持通过。
 - **过渡实现必须可整体删除**（R6）：`src/rime_engine.*` 与 `tsf/` 只允许通过 `src/rime_config_client.h` 抽象层被调用。
 - **候选窗只出现一次**（R4）：官方 `WeaselUI/` 的 D2D 面板**不引入**；`WeaselTSF` 必须打补丁禁用其 D2D 渲染。
-- **运行时统一 `/MD`**：本仓 GUI（Qt 官方二进制）、vendor 的 Weasel 静态库、Boost 静态库**三者一致**。
+- **运行时统一 `/MD`**：本仓 GUI（Qt 官方二进制）、vendor 的 Weasel 静态库**两者一致**。
   ⚠️ 上游 Weasel 用 `/MT`，**本仓不跟随** —— 跟随会导致与 Qt 的 LNK2038 运行库不匹配。
-- **Boost 必须用 `runtime-link=shared`**（/MD），否则同样 LNK2038。
+- **Boost 只用头文件，不链接任何 Boost 库**（T1 实测确认，见下方「T1 执行记录」）。
 - **ATL / WTL**：Weasel 的 `WeaselIPCServer` 用 ATL 的 `CWindowImpl`；WTL 已 vendor 在 `3rdparty/weasel/include/wtl/`。
+  ⚠️ **Visual Studio 18 把 ATL/MFC 挪进了工具集目录**：
+  `VC/Tools/MSVC/<ver>/atlmfc/{include,lib}`，不再是 VS2022 的 `VC/ATL/`。
 - 本机工具链：Qt `C:\Qt\6.8.2\msvc2022_64`；xmake `C:\devtools\xmake\xmake\xmake.exe`；VS 18（MSVC 19.51，**Boost 需显式 `vc143`**）。
 - 每次提交前跑 `powershell -ExecutionPolicy Bypass -File scripts/run-selfchecks.ps1`（含 `--verify`，Round 1 为 14 项，Round 2 扩到 18 项）。
+
+### T1 执行记录（2026-11-17，已完成）
+
+T1 执行中撞到三条与计划假设不符的事实，已回写：
+
+| 计划原假设 | 实际情况 |
+| :--- | :--- |
+| 需要链接 `boost_thread`/`boost_serialization` 等 Boost 库 | **Boost 1.88 起 `boost::thread` 在 Windows 上是 header-only**（通用实现移到 `libs/thread/src/pthread/`），不产出 `.lib`；上游 Weasel 因此**一个 Boost 库都不链接**，只把 `BOOST_ROOT` 加进 include 路径。本仓照做：**只用头文件** |
+| ATL 在 `VC/ATL/include` | **VS 18 改到 `VC/Tools/MSVC/<ver>/atlmfc/include`**。这与 Boost 的 `msvc.jam` 反推 `vcvarsall.bat` 失败、setup 步骤崩掉是**同一个根因**（目录布局变了） |
+| `xmake.lua` 里可用 `io`/`pcall`/`os.execv`/`path.dirname` | **xmake 3.1 的 Lua 沙箱一个都不提供**。ATL 探测改用 `os.files`/`os.isfile` + 字符串处理 |
+
+附带修正：首轮 vendor 只拷了 `include/*.h`，漏掉 `StringAlgorithm.hpp` 与 `VersionHelpers.hpp`（上游用 `.hpp`），导致 `ActionLoader.cpp` 找不到头文件 —— 已补拷。
+
+产出：`WeaselIPC.lib` / `WeaselIPCServer.lib` / `RimeWithWeasel.lib` 三个静态库均已归档成功。
+
+### T2 执行记录（2026-11-17，已完成）
+
+| 计划原假设 | 实际情况 |
+| :--- | :--- |
+| 「不引入 `WeaselUI/`」 | **必须引入**：`WeaselTSF` 的 `CCandidateList` 持有 `std::unique_ptr<weasel::UI>`，而 `weasel::UI` 的实现（`UIImpl` / `WeaselPanel` / D2D）就在 `WeaselUI/` 里 —— 没有它 `WeaselTSF` 编不过。现在它**只作为数据载体**存在，D2D 窗口永不创建 |
+| 补丁用 `git apply` 即可 | 补丁路径必须**相对仓库根**：在仓库内 `git apply` 按 repo root 解析路径。脚本已改为 `git -C <repoRoot> apply -p1` |
+| 补丁脚本简单调用 `git apply --check` 即可判幂等 | 语义是「**反向**检查通过 == 已应用」。且必须检查输出里的 `Skipped patch` —— 路径解析不了时 git 会**静默跳过**并返回 0，看起来像成功 |
+| 补丁文件用 PowerShell 写盘即可 | PowerShell 5.1 的 `>` 重定向写成 **UTF-16**，git 解析不了 → 静默跳过 → 误判「已应用」。必须显式写 UTF-8 |
+| — | **VS 18 需要 `/FIguiddef.h /FIcoguid.h`**：`<Windows.h>` 在 `WIN32_LEAN_AND_MEAN` 下不再带 `guiddef.h`，而 ATL 的 `atlcomcli.h` 用 `GUID_NULL`/`IID_NULL` 却不自己包含。**且 xmake 会静默忽略未知的 `/FI` 标志**（只打印一行 `is ignored`），必须 `{force = true}` |
+
+产出：`WeaselTSF.lib` / `WeaselUI.lib` 均已归档成功；补丁应用脚本验证了幂等（首次 `applied`、再次 `already applied`）。
 
 ---
 
@@ -206,6 +234,7 @@ so it matches the Qt 6.8.2 binaries instead of upstream's /MT."
 
 **Files:**
 - Create: `3rdparty/weasel/WeaselTSF/**`（vendor）
+- Create: `3rdparty/weasel/WeaselUI/**`（vendor —— **WeaselTSF 依赖它**，见 T2 执行记录）
 - Create: `3rdparty/weasel/patches/0001-disable-d2d-candidate-panel.patch`
 - Create: `scripts/apply-weasel-patches.ps1`
 - Modify: `xmake.lua`

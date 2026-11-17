@@ -239,15 +239,34 @@ target("weasel-fluent-cpp-qt")
     add_frameworks("QtWidgets", "QtGui", "QtCore", "QtSvg")
 
     add_deps("FluentQt")
+    -- Weasel 内核（Round 2）：引擎 + IPC 客户端/服务端
+    add_deps("WeaselIPC", "WeaselIPCServer", "RimeWithWeasel", "WeaselUI")
 
     add_defines("UNICODE", "_UNICODE")
     if is_plat("windows") then
         add_cxflags("/utf-8", "/FS", "/MP", {tools = {"cl", "clang_cl"}})
+        add_cxflags(weasel_force_include, {force = true, tools = {"cl", "clang_cl"}})
         add_ldflags("/SUBSYSTEM:CONSOLE", {force = true})
         add_syslinks("User32", "Gdi32", "Dwmapi", "Winmm", "Psapi", "Advapi32")
+        add_syslinks("atls", "ole32", "oleaut32", "d2d1", "dwrite", "dxgi", "d3d11",
+                     "dcomp", "windowscodecs", "shcore", "shlwapi")
     end
 
     add_includedirs("src")
+    add_includedirs("3rdparty/weasel/include")
+    add_includedirs("deps/rime/dist/include")
+    -- librime 的导入库：上游 RimeWithWeasel 调用的是 rime_api.h 里
+    -- RIME_API(dllimport) 声明的导出函数（rime_get_api 等），必须链接 rime.lib。
+    -- 代价：rime.dll 成为启动期硬依赖（与上游 Weasel 相同）；after_build 会把
+    -- deps/rime/dist/lib/rime.dll 拷到输出目录。
+    add_linkdirs("deps/rime/dist/lib")
+    add_links("rime")
+    -- Boost：Weasel 的 IPC 层用到 boost::thread / boost::archive，需要链接
+    -- （上游 Weasel 同样链接 Boost，只是它把 Boost 放在 BOOST_ROOT/stage/lib 下）。
+    -- 库由 scripts/build_boost.ps1 + scripts/build_boost_thread.ps1 产出，
+    -- 统一为简单名字以便 add_links。
+    add_linkdirs("deps/boost_1_88_0/stage/lib")
+    add_links("boost_thread", "boost_serialization", "boost_system", "boost_atomic")
 
     add_files("src/*.cpp")
     add_files("src/*.h")
