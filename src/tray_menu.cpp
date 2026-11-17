@@ -36,7 +36,7 @@ QIcon makeTrayIcon(bool chinese, const QColor& accent) {
 
 } // namespace
 
-TrayMenu::TrayMenu(QSystemTrayIcon* icon, RimeEngine* engine, QObject* parent)
+TrayMenu::TrayMenu(QSystemTrayIcon* icon, UiEngine* engine, QObject* parent)
     : QObject(parent), m_icon(icon), m_engine(engine) {
     if (!m_icon) {
         return;

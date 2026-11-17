@@ -19,4 +19,9 @@
 ///   \\.\pipe\<用户名>\<WEASEL_IPC_PIPE_NAME>
 #define WEASEL_IPC_PIPE_NAME L"WeaselFluentNamedPipe"
 
+/// 服务端单实例互斥量的名字前缀，与官方 Weasel 隔离。
+/// 上游用 "(WEASEL)Furandōru-Sukāretto-<用户名>"：官方 WeaselServer.exe 在跑的时候，
+/// 那个互斥量已经存在，weasel::Server::Start() 会直接返回 0（本仓的服务起不来）。
+#define WEASEL_SERVER_INSTANCE_PREFIX L"(WeaselFluent)Instance-"
+
 #endif // WEASEL_FLUENT_DEFINES_H

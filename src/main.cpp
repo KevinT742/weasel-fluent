@@ -35,9 +35,9 @@
 #include "settings_window.h"
 #include "emoji_picker_window.h"
 #include "extension_panel_window.h"
-#include "input_hook.h"
-#include "ipc_server.h"
 #include "tray_menu.h"
+#include "ui_engine.h"
+#include "weasel_engine.h"
 #include <QSystemTrayIcon>
 #include <QMenu>
 #include <QAction>
@@ -55,6 +55,92 @@ QString previewOutputDir() {
 }
 
 } // namespace
+
+// ============================================================================
+// Weasel 运行时端到端探针（独立进程）
+//
+// 单独拎出来是因为 librime 是**进程级全局单例**：自检套件主体里还有一个
+// 过渡实现的 RimeEngine（TEST 2 用）已经初始化过 librime，同进程再起
+// WeaselEngine 会互相踩（用户词库的 LOCK 抢不到、组合态起不来）。
+// ============================================================================
+int runWeaselRuntimeProbe() {
+    std::cout << "[PROBE] Starting the Weasel runtime...\n";
+
+    // 用一个**隔离的 Rime 用户目录**：机器上装着官方 Weasel 时，
+    // 官方 WeaselServer.exe 正占着 %APPDATA%\Rime 的用户词库 LOCK，
+    // 本仓的引擎就只能只读词库（输入出不来候选）。
+    // 上游的 WeaselUserDataPath() 支持 WEASEL_USER_DIR 覆盖（见 vendor 补丁 0006）。
+    const QString probeUserDir =
+        QDir(QDir::tempPath()).filePath(QStringLiteral("weasel-fluent-probe-%1")
+                                            .arg(QCoreApplication::applicationPid()));
+    QDir().mkpath(probeUserDir);
+    qputenv("WEASEL_USER_DIR", probeUserDir.toLocal8Bit().constData());
+
+    WeaselEngine weasel;
+    QString err;
+    if (!weasel.start(&err)) {
+        std::cerr << "FAIL: WeaselEngine start failed: " << err.toStdString() << "\n";
+        return 1;
+    }
+    if (!weasel.isRunning()) {
+        std::cerr << "FAIL: WeaselEngine is not running\n";
+        return 1;
+    }
+
+    // 输入 "nihao"。命令投到服务端线程执行，状态再异步回流，所以这里要等。
+    weasel.processChar(QChar('n'));
+    weasel.processChar(QChar('i'));
+    weasel.processChar(QChar('h'));
+    weasel.processChar(QChar('a'));
+    weasel.processChar(QChar('o'));
+
+    RimeUiState st;
+    for (int i = 0; i < 150; ++i) {
+        QCoreApplication::processEvents();
+        QThread::msleep(20);
+        st = weasel.uiState();
+        if (!st.candidates.isEmpty()) {
+            break;
+        }
+    }
+    if (st.candidates.isEmpty()) {
+        std::cerr << "FAIL: Weasel runtime produced no candidates for 'nihao'"
+                  << " (schema=" << weasel.currentSchema().toStdString()
+                  << " composing=" << (st.isComposing ? 1 : 0)
+                  << " preedit=[" << st.preedit.toStdString() << "])\n";
+        return 1;
+    }
+    std::cout << "  -> Weasel runtime candidates: " << st.candidates.size()
+              << ", first: " << st.candidates[0].text.toUtf8().constData()
+              << ", schema: " << weasel.currentSchema().toUtf8().constData() << "\n";
+
+    // 桥接：同一个 Context/Status 映射出来的状态必须一致。
+    const RimeUiState bridged = FluentUiAdapter::toUiState(weasel.context(), weasel.status());
+    if (bridged.candidates.size() != st.candidates.size()) {
+        std::cerr << "FAIL: bridge mapping disagrees with the engine state\n";
+        return 1;
+    }
+
+    // 中英模式也走同一条路：设 ascii_mode 之后 status().ascii_mode 要变。
+    weasel.setAsciiMode(true);
+    for (int i = 0; i < 40; ++i) {
+        QCoreApplication::processEvents();
+        QThread::msleep(20);
+        if (weasel.isAsciiMode()) {
+            break;
+        }
+    }
+    if (!weasel.isAsciiMode()) {
+        std::cerr << "FAIL: ascii mode did not propagate to the Weasel status\n";
+        return 1;
+    }
+    weasel.setAsciiMode(false);
+
+    weasel.stop();
+    QDir(probeUserDir).removeRecursively();
+    std::cout << "[PROBE] OK\n";
+    return 0;
+}
 
 int runVerificationSuite() {
     std::cout << "====================================================\n";
@@ -599,6 +685,36 @@ int runVerificationSuite() {
         std::cout << "  -> PASS: Weasel Context/Status -> RimeUiState mapping OK.\n";
     }
 
+    // 16. Verify the Weasel runtime end-to-end (server + engine + bridge)
+    //
+    // ⚠️ 必须**单独进程**跑：librime 是进程级全局单例，而本进程里的过渡实现
+    // RimeEngine（TEST 2 用的）已经 setup + initialize 过它，还持着用户词库
+    // 的 LOCK 文件；同一个进程里再起一个 WeaselEngine 只会互相踩
+    // （实测报 "另一个程序正在使用此文件" + 组合态起不来）。
+    std::cout << "[TEST 16] Testing the Weasel runtime end-to-end...\n";
+    {
+        QProcess proc;
+        proc.start(QCoreApplication::applicationFilePath(),
+                   QStringList() << QStringLiteral("--verify-weasel-runtime"));
+        if (!proc.waitForStarted(10000)) {
+            std::cerr << "FAIL: could not start the Weasel runtime probe\n";
+            return 1;
+        }
+        if (!proc.waitForFinished(180000)) {
+            proc.kill();
+            std::cerr << "FAIL: the Weasel runtime probe timed out\n";
+            return 1;
+        }
+        const QString probeOut = QString::fromLocal8Bit(proc.readAllStandardOutput());
+        const int code = proc.exitCode();
+        std::cout << probeOut.toStdString();
+        if (code != 0) {
+            std::cerr << "FAIL: the Weasel runtime probe exited with " << code << "\n";
+            return 1;
+        }
+        std::cout << "  -> PASS: Weasel runtime end-to-end OK.\n";
+    }
+
     std::cout << "====================================================\n";
     std::cout << "[APPROVED] All Weasel-Fluent C++ Qt tests passed 100%!\n";
     std::cout << "====================================================\n";
@@ -868,6 +984,10 @@ int main(int argc, char* argv[]) {
                                     QStringLiteral("Run automated verification suite"));
     parser.addOption(verifyOption);
 
+    QCommandLineOption weaselProbeOption(QStringList() << "verify-weasel-runtime",
+                                         QStringLiteral("Run only the Weasel runtime end-to-end probe (internal; used by --verify)"));
+    parser.addOption(weaselProbeOption);
+
     QCommandLineOption benchmarkOption(QStringList() << "benchmark" << "perf",
                                        QStringLiteral("Run comprehensive performance benchmark suite"));
     parser.addOption(benchmarkOption);
@@ -885,11 +1005,25 @@ int main(int argc, char* argv[]) {
                                    QStringLiteral("mode"));
     parser.addOption(themeOption);
 
-    QCommandLineOption hookOption(QStringList() << "hook",
-                                  QStringLiteral("Enable legacy global WH_KEYBOARD_LL hook mode (default is pure TSF IPC)"));
-    parser.addOption(hookOption);
+    // 注：旧的 `--hook`（全局 WH_KEYBOARD_LL 键盘钩子）已随过渡实现下线 ——
+    // 输入由官方 WeaselTSF 这个真正的 TSF 前端接管，钩子只会重复处理按键。
+    // 该选项在 Round 2 之前是给「精简 tsf/」做兜底的。
 
     parser.process(app);
+
+    // 临时诊断：把未捕获异常打出来（terminate handler）。
+    std::set_terminate([]() {
+        try {
+            if (auto e = std::current_exception()) {
+                std::rethrow_exception(e);
+            }
+        } catch (const std::exception& ex) {
+            std::cerr << "[terminate] std::exception: " << ex.what() << "\n";
+        } catch (...) {
+            std::cerr << "[terminate] unknown exception\n";
+        }
+        std::abort();
+    });
 
     if (parser.isSet(themeOption)) {
         QString tm = parser.value(themeOption).toLower();
@@ -904,14 +1038,19 @@ int main(int argc, char* argv[]) {
         return runVerificationSuite();
     }
 
+    if (parser.isSet(weaselProbeOption)) {
+        return runWeaselRuntimeProbe();
+    }
+
     if (parser.isSet(benchmarkOption)) {
         return runBenchmarkSuite();
     }
 
-    RimeEngine engine;
-    engine.initialize();
-
     if (parser.isSet(captureOption)) {
+        // 截图模式用过渡实现（自研 RimeEngine）：它能离线造出候选词，
+        // 不依赖服务端的 Rime 档案。
+        RimeEngine engine;
+        engine.initialize();
         std::cout << "[CAPTURE] Capturing CandidateWindow and SettingsWindow screenshots...\n";
         std::cout << "  Theme mode: " << cfg.themeMode().toUtf8().constData() << "\n";
         std::cout << "  isDarkTheme: " << (cfg.isDarkTheme() ? "true" : "false") << "\n";
@@ -1077,12 +1216,44 @@ int main(int argc, char* argv[]) {
     }
 
     if (parser.isSet(settingsOption)) {
+        // 设置中心是**独立进程**（候选窗点「设置」时另起进程）。
+        // 它自带一份 librime 实例（过渡实现），部署在本地完成；
+        // Round 2 的下一步会把它改成走 Weasel IPC（设计文档 §4.4）。
+        RimeEngine engine;
+        engine.initialize();
         SettingsWindow settingsWin(&engine);
         settingsWin.show();
         return app.exec();
     }
 
+    // ── 服务模式：官方 Weasel 内核 ───────────────────────────────────────
+    // librime 是**进程级全局单例**，服务进程里只能有一份引擎：
+    // 这里必须是 WeaselEngine，不能再叠一个 RimeEngine。
+    //
+    // 单实例守卫要先于引擎启动：否则重复实例会先抢 IPC 管道再退出。
+    HANDLE hSingleMutex = CreateMutexW(nullptr, FALSE, L"WeaselFluentSingleInstanceMutex");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        std::cerr << "[INFO] Weasel-Fluent service is already running. Exiting duplicate instance.\n";
+        if (hSingleMutex) CloseHandle(hSingleMutex);
+        return 0;
+    }
+
+    WeaselEngine engine;
+    QString engineError;
+    if (!engine.start(&engineError)) {
+        std::cerr << "[FATAL] " << engineError.toStdString() << "\n";
+        if (hSingleMutex) CloseHandle(hSingleMutex);
+        return 1;
+    }
+
     CandidateWindow candWin(&engine);
+
+    // 桥接：Weasel 的 Context/Status → Fluent 候选窗（设计文档 §4.3）。
+    // 状态由服务端线程推过来（WeaselEngine 内部已做跨线程投递）。
+    FluentUiAdapter adapter(&candWin);
+    QObject::connect(&engine, &UiEngine::stateChanged, &app, [&]() {
+        adapter.apply(engine.context(), engine.status());
+    });
 
     // Completely decoupled via separate process invocation:
     // Settings center edits config.json, which is watched by QFileSystemWatcher
@@ -1093,43 +1264,26 @@ int main(int argc, char* argv[]) {
     });
 
     if (parser.isSet(demoOption)) {
-        // Default simulation demonstration: input "nihao" so candidate window shows immediately
+        // Standalone demonstration: input "nihao" so candidate window shows immediately.
         engine.processChar('n');
         engine.processChar('i');
         engine.processChar('h');
         engine.processChar('a');
         engine.processChar('o');
+        // Weasel 路径是异步的（按键投到服务端线程，状态再回流），
+        // 这里等状态回来再显示。
+        for (int i = 0; i < 60; ++i) {
+            app.processEvents();
+            QThread::msleep(25);
+        }
         candWin.move(400, 500);
         candWin.show();
         return app.exec();
     }
 
-    // Single-instance guard for background service
-    HANDLE hSingleMutex = CreateMutexW(nullptr, FALSE, L"WeaselFluentSingleInstanceMutex");
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        std::cerr << "[INFO] Weasel-Fluent service is already running. Exiting duplicate instance.\n";
-        if (hSingleMutex) CloseHandle(hSingleMutex);
-        return 0;
-    }
-
-    // 1. Native TSF IPC Server (High-precision caret tracking and system IME pipeline)
-    IpcServer ipcServer(&engine, &candWin);
-    bool ipcOk = ipcServer.start();
-    if (ipcOk) {
-        std::cout << "[SERVICE] Weasel-Fluent TSF Native IPC Server active (Named Pipe: " << "\\\\.\\pipe\\WeaselFluentNamedPipe" << ").\n";
-    }
-
-    // 2. Global Keyboard Hook as optional fallback (only if --hook passed)
-    if (parser.isSet(hookOption)) {
-        InputHook& hook = InputHook::instance();
-        hook.setEngine(&engine);
-        hook.setCandidateWindow(&candWin);
-        if (hook.install()) {
-            std::cout << "[SERVICE] Rime-Fluent Global Input Hook active.\n";
-        } else {
-            std::cerr << "[WARNING] Failed to install global keyboard hook.\n";
-        }
-    }
+    // 1. Weasel IPC 服务端已在 WeaselEngine::start() 里起来
+    //    （官方 Weasel 协议，管道名与官方 Weasel 隔离）。
+    std::cout << "[SERVICE] Weasel-Fluent service active (Weasel IPC server running).\n";
 
     // Fluent tray menu: status + deploy + settings + quit.
     // 中英切换不在托盘里 —— 由系统输入法切换（Win+Space）与 TIP 的
@@ -1138,9 +1292,9 @@ int main(int argc, char* argv[]) {
     auto* trayMenu = new TrayMenu(&tray, &engine);
     trayMenu->setVisible(cfg.showTray());
 
-    QObject::connect(&engine, &RimeEngine::modeChanged, [&](bool isAscii) {
-        trayMenu->setAsciiMode(isAscii);
-    });
+    auto syncTrayAsciiMode = [&]() { trayMenu->setAsciiMode(engine.isAsciiMode()); };
+    QObject::connect(&engine, &UiEngine::stateChanged, &app, syncTrayAsciiMode);
+    syncTrayAsciiMode();
 
     return app.exec();
 }

@@ -8,7 +8,7 @@
 #include <QPointF>
 #include <QTimer>
 #include <QVariantAnimation>
-#include "rime_engine.h"
+#include "ui_engine.h"
 #include "config.h"
 
 class ExtensionPanelWindow : public QWidget {
@@ -21,7 +21,7 @@ public:
         Modes         // 输入状态
     };
 
-    explicit ExtensionPanelWindow(RimeEngine* engine, QWidget* parent = nullptr);
+    explicit ExtensionPanelWindow(UiEngine* engine, QWidget* parent = nullptr);
     ~ExtensionPanelWindow() override = default;
 
     void setCategory(Category cat);
@@ -57,7 +57,7 @@ private:
     void updateTabAnimation(bool animate);
     void drawVectorGear(QPainter& p, const QRectF& rect, const QColor& color);
 
-    RimeEngine* m_engine = nullptr;
+    UiEngine* m_engine = nullptr;
     Category m_category = Category::Snippets;
 
     // Item structure for list rows & mode tiles

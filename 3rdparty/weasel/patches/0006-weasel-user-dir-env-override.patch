@@ -1,0 +1,21 @@
+diff --git a/3rdparty/weasel/RimeWithWeasel/WeaselUtility.cpp b/3rdparty/weasel/RimeWithWeasel/WeaselUtility.cpp
+index c2d76ff..6fdc0f8 100644
+--- a/3rdparty/weasel/RimeWithWeasel/WeaselUtility.cpp
++++ b/3rdparty/weasel/RimeWithWeasel/WeaselUtility.cpp
+@@ -5,6 +5,16 @@
+ 
+ fs::path WeaselUserDataPath() {
+   WCHAR _path[MAX_PATH] = {0};
++  // [weasel-fluent] 允许用环境变量 WEASEL_USER_DIR 覆盖用户 Rime 目录。
++  // 用途：自检套件需要**隔离**的 Rime 目录 —— 机器上装着官方 Weasel 时，
++  // 官方 WeaselServer.exe 正占着 %APPDATA%\Rime 里用户词库的 LOCK 文件，
++  // 本仓的引擎就拿不到词库（只读），输入出不来候选。环境变量是进程级的，
++  // 不会动用户的注册表配置。
++  const DWORD envLen =
++      ::GetEnvironmentVariableW(L"WEASEL_USER_DIR", _path, _countof(_path));
++  if (envLen > 0 && envLen < _countof(_path)) {
++    return fs::path(_path);
++  }
+   const WCHAR KEY[] = L"Software\\Rime\\Weasel";
+   HKEY hKey;
+   LSTATUS ret = RegOpenKey(HKEY_CURRENT_USER, KEY, &hKey);

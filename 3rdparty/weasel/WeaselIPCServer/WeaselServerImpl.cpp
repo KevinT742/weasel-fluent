@@ -28,6 +28,14 @@ using namespace weasel;
 
 extern CAppModule _Module;
 
+// [weasel-fluent] 服务端单实例互斥量的名字前缀，允许编译期覆盖。
+// 上游用 "(WEASEL)Furandōru-Sukāretto-<用户名>"：机器上装着官方 WeaselServer.exe 时，
+// 那个互斥量已经存在，本仓的 weasel::Server::Start() 会直接返回 0（服务起不来）。
+// 覆盖方式见 build_defines/weasel_fluent_defines.h（通过 /FI 强制包含）。
+#ifndef WEASEL_SERVER_INSTANCE_PREFIX
+#define WEASEL_SERVER_INSTANCE_PREFIX L"(WEASEL)Furandōru-Sukāretto-"
+#endif
+
 ServerImpl::ServerImpl()
     : m_pRequestHandler(NULL),
       m_darkMode(IsUserDarkMode()),
@@ -153,7 +161,7 @@ DWORD ServerImpl::OnCommand(WEASEL_IPC_COMMAND uMsg,
 }
 
 HWND ServerImpl::Start() {
-  std::wstring instanceName = L"(WEASEL)Furandōru-Sukāretto-";
+  std::wstring instanceName = WEASEL_SERVER_INSTANCE_PREFIX;
   instanceName += getUsername();
   HANDLE hMutexOneInstance = ::CreateMutex(NULL, FALSE, instanceName.c_str());
   bool areYouOK = (::GetLastError() == ERROR_ALREADY_EXISTS ||
@@ -195,9 +203,14 @@ int ServerImpl::Run() {
       [this, &listener]() { channel->Listen(listener); });
 
   CMessageLoop theLoop;
-  _Module.AddMessageLoop(&theLoop);
+  // [weasel-fluent] 上游在这里用 WTL 的 _Module.AddMessageLoop/RemoveMessageLoop
+  // 把消息循环登记到 ATL 的模块对象上（CServerAppBase 的那套生命周期）。
+  // 但 CAppModule::AddMessageLoop 会解引用 m_pMsgLoopMap —— 那个 map 只在
+  // CAppModule::Initialize() 里分配，没初始化就是空指针解引用（实测 0xC0000005）。
+  // 本仓是 Qt 应用，不走 ATL 的模块生命周期，强行 Initialize 反而会动整个进程的
+  // COM 公寓模型。所以这里不登记：WTL 的 CMessageLoop::Run() 本身是自洽的
+  // （纯 Win32 消息泵）。
   int nRet = theLoop.Run();
-  _Module.RemoveMessageLoop();
   return nRet;
 }
 

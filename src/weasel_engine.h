@@ -3,6 +3,7 @@
 
 #include <QMutex>
 #include <QObject>
+#include <QSemaphore>
 #include <QString>
 
 #include <WeaselIPC.h>
@@ -10,8 +11,12 @@
 #include <RimeWithWeasel.h>
 
 #include <atomic>
+#include <deque>
 #include <memory>
+#include <string>
 #include <thread>
+
+#include "ui_engine.h"
 
 /// 封装官方 Weasel 的 Rime 引擎与 IPC 服务端。
 ///
@@ -24,9 +29,14 @@
 ///     （上游 RimeWithWeasel.cpp: m_ui->Update(ctx, status)），并通过
 ///     OnUpdateUI 回调通知「该刷新了」—— 我们在这里把状态快照给 Qt 线程。
 ///
-/// 线程模型：上游的 weasel::Server::Run() 是阻塞的 Win32 消息循环，与 Qt 的
-/// 事件循环冲突。因此 IPC 循环跑在独立线程上，Qt 主线程只负责界面。
-class WeaselEngine : public QObject {
+/// 线程模型：
+///   * 上游的 `weasel::Server::Start()` 会在**调用它的线程**上创建窗口，
+///     `Run()` 必须在同一个线程上跑消息循环（否则收不到消息）。
+///     因此整个服务端（建窗口 + 初始化引擎 + 消息循环）都在独立线程上；
+///   * `RimeWithWeaselHandler` 的状态（会话表等）只在**服务端线程**上安全，
+///     所以 Qt 线程发来的交互命令（按键 / 选词 / 翻页 / 选项）一律排队，
+///     用 `WM_COMMAND` 投到服务端窗口，由服务端线程执行。
+class WeaselEngine : public UiEngine {
     Q_OBJECT
 public:
     explicit WeaselEngine(QObject* parent = nullptr);
@@ -38,11 +48,34 @@ public:
     /// 停止 IPC 服务端与引擎。
     void stop();
 
+    // ── UiEngine（候选窗 / 扩展面板 / 托盘用） ─────────────────────────
+    RimeUiState uiState() const override;
+
+    bool processKey(int keyCode, int mask = 0) override;
+    bool processChar(QChar ch) override;
+    bool selectCandidate(int index) override;
+    void commitDirectText(const QString& text) override;
+
+    bool isAsciiMode() const override;
+    void setAsciiMode(bool ascii) override;
+    bool isSimplified() const override;
+    void setSimplified(bool simp) override;
+    bool isFullShape() const override;
+    void setFullShape(bool full) override;
+
+    bool selectSchema(const QString& schemaId) override;
+    QString currentSchema() const override;
+    bool deploy() override;
+
+    // ── Weasel 专有 ────────────────────────────────────────────────────
     /// 当前组合态快照（线程安全）。
     weasel::Context context() const;
 
     /// 当前状态快照（线程安全）。
     weasel::Status status() const;
+
+    /// 当前样式（weasel.yaml → weasel::UIStyle）。
+    weasel::UIStyle style() const;
 
     /// 触发全量重新部署（RimeStartMaintenance(FullDeploy) + Join）。
     bool deployFull(QString* error = nullptr);
@@ -50,11 +83,39 @@ public:
     /// IPC 服务端窗口句柄（安装器与托盘用）。
     HWND serverHwnd() const;
 
-signals:
-    /// 组合态/状态发生变化（在 Qt 线程发出）。
-    void stateChanged();
+    /// 服务端是否已就绪。
+    bool isRunning() const { return m_running.load(); }
 
 private:
+    /// 交互命令（在服务端线程执行）。
+    enum class CommandType {
+        Key,
+        SelectCandidate,
+        ChangePage,
+        CommitComposition,
+        ClearComposition,
+        SetOption,
+        Deploy,
+    };
+
+    struct Command {
+        CommandType type = CommandType::Key;
+        weasel::KeyEvent key;
+        int index = 0;
+        bool backward = false;
+        std::string option;
+        bool value = false;
+    };
+
+    /// 在 Qt 线程把命令排队，并投递给服务端线程。
+    void postCommand(const Command& cmd);
+    /// 在服务端线程执行排队的命令。
+    void executePendingCommands();
+    /// 在服务端线程执行单条命令。
+    void dispatchCommand(const Command& cmd);
+    /// 当前应当操作的会话：优先 TIP 正在用的会话，否则用本进程自建的会话。
+    DWORD currentSessionId() const;
+
     /// 在 IPC 线程上被调用：取快照并投递到 Qt 线程。
     void onServerThreadUpdate();
 
@@ -63,10 +124,20 @@ private:
     weasel::Server* m_server = nullptr;
     std::thread m_serverThread;
     std::atomic<bool> m_running{false};
+    /// 本进程自建的会话（没有 TIP 客户端时使用）。
+    std::atomic<DWORD> m_localSessionId{0};
+    /// 简繁状态。weasel::Status 不带这个字段，故由本类记录，
+    /// 它与投给 Rime 的 "simplification" 选项始终一致。
+    std::atomic<bool> m_simplified{true};
 
     mutable QMutex m_stateMutex;
     weasel::Context m_context;
     weasel::Status m_status;
+    weasel::UIStyle m_style;
+
+    QMutex m_commandMutex;
+    std::deque<Command> m_commands;
+    QSemaphore m_readySemaphore;
 };
 
 #endif // WEASEL_ENGINE_H

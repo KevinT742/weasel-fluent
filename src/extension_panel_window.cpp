@@ -125,7 +125,7 @@ QString ExtensionPanelWindow::numberToChineseAmount(double amount) {
     return QStringLiteral("壹万贰仟元整");
 }
 
-ExtensionPanelWindow::ExtensionPanelWindow(RimeEngine* engine, QWidget* parent)
+ExtensionPanelWindow::ExtensionPanelWindow(UiEngine* engine, QWidget* parent)
     : QWidget(parent), m_engine(engine) {
     setWindowFlags(Qt::Tool |
                    Qt::FramelessWindowHint |

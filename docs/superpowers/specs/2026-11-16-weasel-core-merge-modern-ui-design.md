@@ -190,6 +190,13 @@ Fluent Qt 实现**，因此：
   `WeaselTSF` 的候选列表后端替换为**指向 Fluent 候选窗的桥接**。
 - 桥接方向固定为 **WeaselTSF → Fluent 候选窗**（而非反向）：TSF 侧仍负责组合态、
   候选同步、光标定位等 IME 语义；Fluent 侧只负责渲染与交互。
+- **桥接的数据从哪来（Round 2 实测补正）**：上游的候选列表**在 TIP 进程里**
+  （`CCandidateList` 自带一个 `weasel::UI`），数据流是
+  「服务端 → IPC 响应 → TIP 的 `ResponseParser` → `ContextUpdater` → TIP 的 UI → D2D 面板」。
+  上游的 `_UpdateUI()` **从不调用 `_GetContext()`** —— 那个函数定义了却没人用，
+  所以**服务端的 `weasel::Context` 一直是空的**。
+  本仓的 Fluent 候选窗在**服务端进程**里，因此必须由服务端自己取一次 Context
+  （上游补丁 0005）。**这是桥接真正缺的那一环**：没有它，适配器映射的一直是空 Context。
 - 迁移顺序：先让 `WeaselTSF` 的数据流跑通（经 WeaselIPC），再把 `CCandidateList` 的
   `_ui` 换成桥接实现。**不需要**删除 `WeaselUI` 依赖 —— 它是编译期必需的，
   只需要保证它的面板窗口不被创建（上游补丁 0001）。

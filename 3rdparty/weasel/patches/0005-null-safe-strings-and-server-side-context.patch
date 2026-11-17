@@ -1,0 +1,127 @@
+diff --git a/3rdparty/weasel/RimeWithWeasel/RimeWithWeasel.cpp b/3rdparty/weasel/RimeWithWeasel/RimeWithWeasel.cpp
+index eca5b2a..d786dfa 100644
+--- a/3rdparty/weasel/RimeWithWeasel/RimeWithWeasel.cpp
++++ b/3rdparty/weasel/RimeWithWeasel/RimeWithWeasel.cpp
+@@ -16,6 +16,19 @@
+ 
+ using namespace weasel;
+ 
++// [weasel-fluent] NULL 安全的 UTF-8 → UTF-16 转换。
++//
++// 上游到处直接写 `u8tow(x)`（宏 = string_to_wstring(x, CP_UTF8)），而那个函数的
++// 参数是 `const std::string&` —— 从 `const char*` 构造 std::string 时传 NULL 是
++// 未定义行为：MSVC 会抛 std::invalid_argument，在服务端线程里就变成 0xC0000409
++// 直接崩掉整个进程（实测：候选窗发一个按键就崩）。
++//
++// librime 在「会话没有有效方案」「提交串为空」「候选词没有文本」等情况下**确实**
++// 会给出 NULL 指针，所以这里统一改走空指针安全的包装。
++static inline std::wstring u8tow_safe(const char* s) {
++  return s ? u8tow(s) : std::wstring();
++}
++
+ static RimeApi* rime_api;
+ WeaselSessionId _GenerateNewWeaselSessionId(SessionStatusMap sm, DWORD pid) {
+   if (sm.empty())
+@@ -457,13 +470,13 @@ void RimeWithWeaselHandler::_GetCandidateInfo(CandidateInfo& cinfo,
+   cinfo.comments.resize(ctx.menu.num_candidates);
+   cinfo.labels.resize(ctx.menu.num_candidates);
+   for (int i = 0; i < ctx.menu.num_candidates; ++i) {
+-    cinfo.candies[i].str = escape_string(u8tow(ctx.menu.candidates[i].text));
++    cinfo.candies[i].str = escape_string(u8tow_safe(ctx.menu.candidates[i].text));
+     if (ctx.menu.candidates[i].comment) {
+       cinfo.comments[i].str =
+-          escape_string(u8tow(ctx.menu.candidates[i].comment));
++          escape_string(u8tow_safe(ctx.menu.candidates[i].comment));
+     }
+     if (RIME_STRUCT_HAS_MEMBER(ctx, ctx.select_labels) && ctx.select_labels) {
+-      cinfo.labels[i].str = escape_string(u8tow(ctx.select_labels[i]));
++      cinfo.labels[i].str = escape_string(u8tow_safe(ctx.select_labels[i]));
+     } else if (ctx.menu.select_keys) {
+       cinfo.labels[i].str =
+           escape_string(std::wstring(1, ctx.menu.select_keys[i]));
+@@ -537,6 +550,18 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
+ 
+   _GetStatus(weasel_status, ipc_id, weasel_context);
+ 
++  // [weasel-fluent] 把组合态（预编辑串 + 候选列表）填进服务端的 weasel::Context。
++  //
++  // 上游这里**不填**：上游的候选面板在 **TIP 进程**里（CCandidateList 自带一个
++  // weasel::UI），数据流是「服务端 → IPC 响应 → TIP 的 ResponseParser →
++  // ContextUpdater → TIP 的 UI → D2D 面板」。所以上游的 _GetContext() 定义了却
++  // 从没被调用过（实测：本仓的服务端拿到的 weasel::UI::ctx() 永远是空的，
++  // 候选词一个都没有）。
++  //
++  // 本仓的 Fluent 候选窗在**服务端进程**里（设计文档 §4.3 的桥接点），
++  // 所以必须由服务端自己取一次 Context —— 这就是桥接真正缺的那一环。
++  _GetContext(weasel_context, session_id);
++
+   SessionStatus& session_status = get_session_status(ipc_id);
+   if (rime_api->get_option(session_id, "inline_preedit"))
+     session_status.style.client_caps |= INLINE_PREEDIT_CAPABLE;
+@@ -756,7 +781,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
+   RIME_STRUCT(RimeCommit, commit);
+   if (rime_api->get_commit(session_id, &commit)) {
+     actions.push_back("commit");
+-    std::wstring commit_text_w = escape_string(u8tow(commit.text));
++    std::wstring commit_text_w = escape_string(u8tow_safe(commit.text));
+     body.append(L"commit=").append(commit_text_w).append(L"\n");
+     rime_api->free_commit(&commit);
+   }
+@@ -807,6 +832,10 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
+       const auto& end = ctx.composition.sel_end;
+       const auto& cursor = ctx.composition.cursor_pos;
+       static const auto u8towstring = [](const char* u8str, int len = 0) {
++        // [weasel-fluent] NULL 安全：见文件头 u8tow_safe 的说明。
++        if (!u8str) {
++          return std::wstring(L"0");
++        }
+         return std::to_wstring(utf8towcslen(u8str, len));
+       };
+       actions.push_back("ctx");
+@@ -833,7 +862,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
+         }
+         case UIStyle::COMPOSITION: {
+           body.append(L"ctx.preedit=")
+-              .append(escape_string(u8tow(preedit)))
++              .append(escape_string(u8tow_safe(preedit)))
+               .append(L"\n");
+           if (start <= end) {
+             body.append(L"ctx.preedit.cursor=")
+@@ -848,7 +877,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
+         }
+         case UIStyle::PREVIEW_ALL: {
+           body.append(L"ctx.preedit=")
+-              .append(escape_string(u8tow(preedit)))
++              .append(escape_string(u8tow_safe(preedit)))
+               .append(L"  [");
+           auto label_valid = session_status.style.label_font_point > 0;
+           auto comment_valid = session_status.style.comment_font_point > 0;
+@@ -873,7 +902,7 @@ bool RimeWithWeaselHandler::_Respond(WeaselSessionId ipc_id, EatLine eat) {
+             body.append(L" ")
+                 .append(prefix_w)
+                 .append(escape_string(label_w))
+-                .append(escape_string(u8tow(ctx.menu.candidates[i].text)))
++                .append(escape_string(u8tow_safe(ctx.menu.candidates[i].text)))
+                 .append(L" ")
+                 .append(escape_string(comment_w));
+           }
+@@ -1440,8 +1469,8 @@ void RimeWithWeaselHandler::_GetStatus(Status& stat,
+     std::string schema_id = "";
+     if (status.schema_id)
+       schema_id = status.schema_id;
+-    stat.schema_name = u8tow(status.schema_name);
+-    stat.schema_id = u8tow(status.schema_id);
++    stat.schema_name = u8tow_safe(status.schema_name);
++    stat.schema_id = u8tow_safe(status.schema_id);
+     stat.ascii_mode = !!status.is_ascii_mode;
+     stat.composing = !!status.is_composing;
+     stat.disabled = !!status.is_disabled;
+@@ -1476,7 +1505,7 @@ void RimeWithWeaselHandler::_GetContext(Context& weasel_context,
+   RIME_STRUCT(RimeContext, ctx);
+   if (rime_api->get_context(session_id, &ctx)) {
+     if (ctx.composition.length > 0) {
+-      weasel_context.preedit.str = u8tow(ctx.composition.preedit);
++      weasel_context.preedit.str = u8tow_safe(ctx.composition.preedit);
+       if (ctx.composition.sel_start < ctx.composition.sel_end) {
+         TextAttribute attr;
+         attr.type = HIGHLIGHTED;

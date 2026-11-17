@@ -225,7 +225,7 @@ inline qreal indicatorTrailingProgress(qreal progress) {
 
 } // namespace
 
-CandidateWindow::CandidateWindow(RimeEngine* engine, QWidget* parent)
+CandidateWindow::CandidateWindow(UiEngine* engine, QWidget* parent)
     : QWidget(parent), m_engine(engine) {
     setWindowFlags(Qt::Tool |
                    Qt::FramelessWindowHint |
@@ -253,8 +253,8 @@ CandidateWindow::CandidateWindow(RimeEngine* engine, QWidget* parent)
     });
 
     if (m_engine) {
-        connect(m_engine, &RimeEngine::stateChanged, this, &CandidateWindow::updateUiState);
-        m_state = m_engine->getUiState();
+        connect(m_engine, &UiEngine::stateChanged, this, [this]() { updateUiState(m_engine->uiState()); });
+        m_state = m_engine->uiState();
     }
     connect(&AppConfig::instance(), &AppConfig::configChanged, this, &CandidateWindow::reloadConfig);
 
@@ -285,7 +285,7 @@ bool CandidateWindow::nativeEvent(const QByteArray& eventType, void* message, qi
 
 void CandidateWindow::reloadConfig() {
     if (m_engine) {
-        m_state = m_engine->getUiState();
+        m_state = m_engine->uiState();
     }
 #ifdef Q_OS_WIN
     HWND hwnd = reinterpret_cast<HWND>(winId());
@@ -1396,7 +1396,7 @@ void CandidateWindow::toggleExpanded() {
 
     m_isExpanded = !m_isExpanded;
     if (m_isExpanded && m_engine && m_state.candidates.isEmpty()) {
-        m_state = m_engine->getUiState();
+        m_state = m_engine->uiState();
     }
     calculateLayout();
     update();

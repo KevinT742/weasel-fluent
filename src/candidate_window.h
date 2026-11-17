@@ -4,7 +4,7 @@
 #include <QWidget>
 #include <QVector>
 #include <QRect>
-#include "rime_engine.h"
+#include "ui_engine.h"
 #include "config.h"
 
 #include <WeaselIPCData.h>
@@ -20,7 +20,7 @@ class CandidateWindow : public QWidget {
     Q_OBJECT
 
 public:
-    explicit CandidateWindow(RimeEngine* engine, QWidget* parent = nullptr);
+    explicit CandidateWindow(UiEngine* engine, QWidget* parent = nullptr);
     ~CandidateWindow() override;
 
     void updateUiState(const RimeUiState& state);
@@ -82,7 +82,7 @@ private:
     void drawVectorGear(QPainter& p, const QRectF& rect, const QColor& color);
     void drawVectorSticker(QPainter& p, const QRectF& rect, const QColor& color);
 
-    RimeEngine* m_engine = nullptr;
+    UiEngine* m_engine = nullptr;
     RimeUiState m_state;
     bool m_asciiMode = false;
     EmojiPickerWindow* m_emojiPicker = nullptr;

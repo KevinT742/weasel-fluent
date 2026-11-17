@@ -3,7 +3,7 @@
 
 #include <WeaselIPCData.h>
 
-#include "rime_engine.h"
+#include "rime_ui_state.h"
 
 class CandidateWindow;
 

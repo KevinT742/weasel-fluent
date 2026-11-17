@@ -7,7 +7,7 @@
 #include <QCoreApplication>
 #include <cstring>
 
-RimeEngine::RimeEngine(QObject* parent) : QObject(parent) {
+RimeEngine::RimeEngine(QObject* parent) : UiEngine(parent) {
 }
 
 RimeEngine::~RimeEngine() {
@@ -195,7 +195,7 @@ bool RimeEngine::selectCandidate(int index) {
     return false;
 }
 
-RimeUiState RimeEngine::getUiState() {
+RimeUiState RimeEngine::getUiState() const {
     RimeUiState state;
     if (m_isLoaded && m_sessionId && m_fnGetContext) {
         RimeContext ctx{};
@@ -357,8 +357,11 @@ void RimeEngine::updateState() {
     if (!commitText.isEmpty()) {
         emit committed(commitText);
     }
-    RimeUiState st = getUiState();
-    emit stateChanged(st);
+    emit stateChanged();
+}
+
+RimeUiState RimeEngine::uiState() const {
+    return getUiState();
 }
 
 void RimeEngine::commitDirectText(const QString& text) {

@@ -7,39 +7,16 @@
 #include <QLibrary>
 #include <cstdint>
 
-constexpr int RIME_KEY_BACKSPACE = 0xff08;
-constexpr int RIME_KEY_TAB = 0xff09;
-constexpr int RIME_KEY_RETURN = 0xff0d;
-constexpr int RIME_KEY_ESCAPE = 0xff1b;
-constexpr int RIME_KEY_SPACE = 0x0020;
-constexpr int RIME_KEY_LEFT = 0xff51;
-constexpr int RIME_KEY_UP = 0xff52;
-constexpr int RIME_KEY_RIGHT = 0xff53;
-constexpr int RIME_KEY_DOWN = 0xff54;
-constexpr int RIME_KEY_PAGE_UP = 0xff55;
-constexpr int RIME_KEY_PAGE_DOWN = 0xff56;
+#include "rime_ui_state.h"
+#include "ui_engine.h"
 
-struct CandidateItem {
-    int index = 0;
-    QString text;
-    QString comment;
-};
-
-struct RimeUiState {
-    bool isComposing = false;
-    QString preedit;
-    int cursorPos = 0;
-    QVector<CandidateItem> candidates;
-    int highlightedIndex = 0;
-    int pageNo = 0;
-    bool isLastPage = false;
-    QString commitText;
-    /// 中/英文模式。Weasel 路径由 weasel::Status::ascii_mode 提供，
-    /// 自研 RimeEngine 路径由 setAsciiMode() 维护。
-    bool asciiMode = false;
-};
-
-class RimeEngine : public QObject {
+/// 过渡实现：自研的 librime 封装（设计文档 R6）。
+///
+/// ⚠️ 它只活到 **T7**：服务进程改用 `WeaselEngine`、设置中心改走 Weasel IPC 之后，
+/// 这个类连同 `src/ipc_server.*`、旧 `tsf/` 一起整体删除。
+/// 在此之前，它实现与 `WeaselEngine` 相同的 `UiEngine` 接口，
+/// 因此 UI 层不需要为切换做两套代码。
+class RimeEngine : public UiEngine {
     Q_OBJECT
 
 public:
@@ -52,37 +29,35 @@ public:
 
     bool isLoaded() const { return m_isLoaded; }
 
-    bool processKey(int keyCode, int mask = 0);
-    bool processChar(QChar ch);
-    bool selectCandidate(int index);
+    // ── UiEngine ───────────────────────────────────────────────────────
+    RimeUiState uiState() const override;
 
-    RimeUiState getUiState();
+    bool processKey(int keyCode, int mask = 0) override;
+    bool processChar(QChar ch) override;
+    bool selectCandidate(int index) override;
+    void commitDirectText(const QString& text) override;
+
+    bool isAsciiMode() const override { return m_asciiMode; }
+    void setAsciiMode(bool ascii) override;
+    bool isSimplified() const override { return m_simplified; }
+    void setSimplified(bool simp) override;
+    bool isFullShape() const override { return m_fullShape; }
+    void setFullShape(bool full) override;
+
+    bool selectSchema(const QString& schemaId) override;
+    QString currentSchema() const override { return m_currentSchema; }
+    bool deploy() override;
+
+    RimeUiState getUiState() const;
     QString getCommitText();
     void clear();
-    void commitDirectText(const QString& text);
-
-    bool deploy();
 
     /// 全量重建：RimeStartMaintenance(RimeMaintenanceTypeFullDeploy) + JoinMaintenanceThread。
     /// 与 deploy() 的区别：deploy() 只重载已编译产物（不重编译词库），
     /// deployFull() 会真正重新编译方案与词库。
     bool deployFull(QString* error = nullptr);
 
-    bool isAsciiMode() const { return m_asciiMode; }
-    void setAsciiMode(bool ascii);
-
-    bool isFullShape() const { return m_fullShape; }
-    void setFullShape(bool full);
-
-    bool isSimplified() const { return m_simplified; }
-    void setSimplified(bool simp);
-
-    QString currentSchema() const { return m_currentSchema; }
-    bool selectSchema(const QString& schemaId);
-
 signals:
-    void stateChanged(const RimeUiState& state);
-    void committed(const QString& text);
     void modeChanged(bool isAsciiMode);
 
 private:

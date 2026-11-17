@@ -4,7 +4,7 @@
 #include <QObject>
 #include <QSystemTrayIcon>
 
-class RimeEngine;
+class UiEngine;
 
 /// Fluent 风格的托盘菜单。
 ///
@@ -15,7 +15,7 @@ class RimeEngine;
 class TrayMenu : public QObject {
     Q_OBJECT
 public:
-    TrayMenu(QSystemTrayIcon* icon, RimeEngine* engine, QObject* parent = nullptr);
+    TrayMenu(QSystemTrayIcon* icon, UiEngine* engine, QObject* parent = nullptr);
 
     /// 同步中英状态到图标与菜单文字。
     void setAsciiMode(bool ascii);
@@ -28,7 +28,7 @@ private:
     void rebuildMenu();
 
     QSystemTrayIcon* m_icon = nullptr;
-    RimeEngine* m_engine = nullptr;
+    UiEngine* m_engine = nullptr;
     bool m_ascii = false;
 };
 

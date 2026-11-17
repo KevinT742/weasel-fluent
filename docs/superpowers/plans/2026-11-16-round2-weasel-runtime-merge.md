@@ -99,7 +99,59 @@ T1 执行中撞到三条与计划假设不符的事实，已回写：
 - 新增 `tip/weasel_tsf_register.cpp`（逐用户注册）、`build_defines/weasel_fluent_defines.h`（管道名覆盖）、补丁 `0002-isolated-ipc-pipe-and-per-user-root.patch`。
 - 新增自检 `scripts/verify-tip-dll.ps1`（导出表 + 两端管道名一致 + 上游 Register.cpp 确实被排除），已挂进 `scripts/run-selfchecks.ps1`。
 
-> ⚠️ **T5 之后 TIP 还不可用**：新 TIP 说的是**上游 Weasel IPC 协议**，而服务端此时仍在跑自研的 `src/ipc_server.cpp`（自定义二进制协议 + `WeaselFluentNamedPipe` 自定义管道）。两端协议必须**同时**切换 —— 这就是 **T7** 的活（服务端换成 `WeaselEngine`，并删掉 `src/rime_engine.*` 与旧 `tsf/`）。在 T7 之前不要把这个 DLL 装到机器上。
+### T6 执行记录（2026-11-17，已完成）—— 服务端切到 Weasel 内核
+
+> **任务顺序调整**：原计划把「设置中心接 Weasel 通道」排在「服务端切换」之前，
+> 但设置中心要走 Weasel IPC 部署，前提就是**服务端已经是 Weasel 服务**；
+> 而且 librime 是**进程级全局单例**，两条引擎不能并存。所以本任务把
+> 「服务端切换」提前，并把「删除过渡实现」里已经死掉的 `src/ipc_server.*`、
+> `src/input_hook.*`、旧 `tsf/` 一并删掉。
+> 「设置中心接 Weasel 通道」顺延为下一个任务。
+
+| 计划原假设 | 实际情况 |
+| :--- | :--- |
+| `WeaselEngine::start()` 里 `m_server->Start()` 在 Qt 线程、`Run()` 在服务端线程 | **必须同一个线程**：`weasel::Server::Start()` 是在**调用线程**上创建窗口的，`Run()` 跑的是该线程的消息循环。分开 ⇒ 消息永远收不到。改为「建窗口 + 初始化引擎 + 跑循环」全在服务端线程，Qt 线程用信号量等就绪 |
+| 上游 `ServerImpl::Run()` 里的 `_Module.AddMessageLoop()` 能直接用 | **崩**（0xC0000005）：`CAppModule::AddMessageLoop` 会解引用 `m_pMsgLoopMap`，而那个 map **只在 `CAppModule::Initialize()` 里分配**。本仓是 Qt 应用，不走 ATL 模块生命周期。⇒ 补丁 0004 去掉这两行（WTL 的 `CMessageLoop::Run()` 本身自洽） |
+| `weasel::Context` 里已经有预编辑串与候选列表 | **服务端拿到的 Context 一直是空的**！上游 `_UpdateUI()` **从不调用 `_GetContext()`** —— 该函数定义了却没人用。上游的候选列表在 **TIP 进程**里（`CCandidateList` 自带一个 `weasel::UI`），数据流是「服务端 → IPC 响应 → TIP 的 `ResponseParser` → `ContextUpdater` → TIP 的 UI → D2D 面板」。本仓的 Fluent 候选窗在**服务端进程**里 ⇒ 补丁 0005 让服务端自己调 `_GetContext()`。**这是整个桥接真正缺的那一环**（T4 的适配器一直在映射一个空 Context） |
+| `ProcessKeyEvent(keyEvent, sessionId, nullptr)` 的第三个参数可以传 `nullptr` | **会崩**（0xC0000409）：上游 `_Respond()` 末尾直接调用 `eat(header)` / `eat(body)` 而**不检查空指针** —— 调用空的 `std::function` 抛 `std::bad_function_call`，在服务端线程里直接终止整个进程。⇒ 必须传一个 no-op 回调 |
+| 上游的 `u8tow(ptr)` 可以随便用 | `u8tow` = `string_to_wstring(x, CP_UTF8)`，参数是 `const std::string&` —— 从 `const char*` 构造 `std::string` 传 NULL 是未定义行为。librime 在「提交串为空」「会话没有有效方案」时**确实**给 NULL。⇒ 补丁 0005 统一走 `u8tow_safe()` |
+| 服务端单实例互斥量 `(WEASEL)Furandōru-Sukāretto-<user>` 可以直接用 | 机器上装着官方 Weasel 时，**官方 `WeaselServer.exe` 正占着这个互斥量** ⇒ `weasel::Server::Start()` 直接返回 0，本仓的服务根本起不来。⇒ 补丁 0003 把前缀做成可编译期覆盖 |
+| 自检可以在同一个进程里同时跑旧引擎与新引擎的用例 | **不行**：librime 是进程级全局单例。旧 `RimeEngine`（TEST 2）已经 setup + initialize 过它，还持着用户词库的 LOCK 文件 ⇒ 新引擎只能只读，组合态起不来。⇒ Weasel 运行时端到端用例改为**独立子进程**（`--verify-weasel-runtime`） |
+
+**另外两条环境事实**：
+
+1. **官方 Weasel 正在本机运行**（`F:\Rime\weasel-0.17.4\WeaselServer.exe`），占着
+   `%APPDATA%\Rime` 里用户词库的 LOCK ⇒ 本仓的引擎拿不到词库（只读），输入出不来候选。
+   这正是 T8 安装器必须「停掉官方 WeaselServer.exe」的原因；自检则用隔离的
+   Rime 目录（补丁 0006 的 `WEASEL_USER_DIR`）绕开。
+2. **`--hook`（全局 WH_KEYBOARD_LL 键盘钩子）随过渡实现下线**：输入由官方 WeaselTSF
+   这个真正的 TSF 前端接管，钩子只会重复处理按键。
+
+**产出**：
+
+- 新增 `src/ui_engine.h`（`UiEngine` 抽象：候选窗 / 扩展面板 / 托盘需要的引擎能力 +
+  `stateChanged` / `committed` 两个公共信号）、`src/rime_ui_state.h`（`RimeUiState` /
+  `CandidateItem` 从 `rime_engine.h` 拆出来）。
+- `RimeEngine` 与 `WeaselEngine` 都实现 `UiEngine` ⇒ UI 层（候选窗 / 扩展面板 / 托盘）
+  换成依赖接口，切换引擎不用改调用方式。
+- `WeaselEngine` 补齐 UI 需要的全部能力：按键 / 选词 / 翻页 / 上屏 / 清空 / 选项 /
+  部署 / 切方案 / 直接上屏文本（`SendInput` + `KEYEVENTF_UNICODE`）。
+  **所有交互命令都排队后用 `WM_COMMAND` 投到服务端窗口执行**（handler 的会话表不是
+  线程安全的）；服务端线程用 `AddMenuHandler(41001, ...)` 接收。
+- 服务进程改用 `WeaselEngine` + `FluentUiAdapter` 桥接；删除 `src/ipc_server.*`、
+  `src/input_hook.*`、旧 `tsf/`。
+- 新增 vendor 补丁 0003–0006（见 `3rdparty/weasel/UPSTREAM.md`）。
+- `--verify` 扩到 **16 项**：新增 TEST 16（Weasel 运行时端到端，独立子进程跑，
+  断言能出候选、桥接映射一致、`ascii_mode` 能同步）。
+
+> 注：`src/rime_engine.*` 暂时保留 —— 设置中心是**独立进程**，仍用它自己那份
+> librime 实例做部署（上游部署器也是这个模式：部署器自己 rebuild，再让服务端重启）。
+> 下一个任务把设置中心改走 Weasel IPC 之后，这两个文件即可整体删除（R6）。
+
+> **T5 那条「TIP 还不可用」的警告到此解除**：T6 把服务端切成了 `WeaselEngine`，
+> 两端现在说的是同一套上游 Weasel IPC 协议了（管道名 `WeaselFluentNamedPipe`）。
+> 但**还不要安装到机器上**：设置中心仍在跑旧引擎、官方 Weasel 也没被替换，
+> 这两件事分别是下一个任务与 T8 的活。
 
 ---
 

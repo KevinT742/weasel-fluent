@@ -1,0 +1,28 @@
+diff --git a/3rdparty/weasel/WeaselIPCServer/WeaselServerImpl.cpp b/3rdparty/weasel/WeaselIPCServer/WeaselServerImpl.cpp
+index eeaac60..47b880a 100644
+--- a/3rdparty/weasel/WeaselIPCServer/WeaselServerImpl.cpp
++++ b/3rdparty/weasel/WeaselIPCServer/WeaselServerImpl.cpp
+@@ -28,6 +28,14 @@ using namespace weasel;
+ 
+ extern CAppModule _Module;
+ 
++// [weasel-fluent] 服务端单实例互斥量的名字前缀，允许编译期覆盖。
++// 上游用 "(WEASEL)Furandōru-Sukāretto-<用户名>"：机器上装着官方 WeaselServer.exe 时，
++// 那个互斥量已经存在，本仓的 weasel::Server::Start() 会直接返回 0（服务起不来）。
++// 覆盖方式见 build_defines/weasel_fluent_defines.h（通过 /FI 强制包含）。
++#ifndef WEASEL_SERVER_INSTANCE_PREFIX
++#define WEASEL_SERVER_INSTANCE_PREFIX L"(WEASEL)Furandōru-Sukāretto-"
++#endif
++
+ ServerImpl::ServerImpl()
+     : m_pRequestHandler(NULL),
+       m_darkMode(IsUserDarkMode()),
+@@ -153,7 +161,7 @@ DWORD ServerImpl::OnCommand(WEASEL_IPC_COMMAND uMsg,
+ }
+ 
+ HWND ServerImpl::Start() {
+-  std::wstring instanceName = L"(WEASEL)Furandōru-Sukāretto-";
++  std::wstring instanceName = WEASEL_SERVER_INSTANCE_PREFIX;
+   instanceName += getUsername();
+   HANDLE hMutexOneInstance = ::CreateMutex(NULL, FALSE, instanceName.c_str());
+   bool areYouOK = (::GetLastError() == ERROR_ALREADY_EXISTS ||
