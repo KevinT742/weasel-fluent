@@ -49,6 +49,19 @@ T1 执行中撞到三条与计划假设不符的事实，已回写：
 
 产出：`WeaselTSF.lib` / `WeaselUI.lib` 均已归档成功；补丁应用脚本验证了幂等（首次 `applied`、再次 `already applied`）。
 
+### T3 执行记录（2026-11-17，已完成）
+
+| 计划原假设 | 实际情况 |
+| :--- | :--- |
+| 「Boost 只用头文件，不链接任何 Boost 库」 | **错，必须链接**。上游 `PipeChannel.h` 用 `boost::thread_specific_ptr`、`WeaselIPCData.h` 用 `boost::archive::text_wiarchive` → 需要 `boost_thread` + `boost_serialization`。先前「上游不链接 Boost」的判断来自被截断的 `AdditionalDependencies` 行 |
+| Boost 用 b2 产出即可 | **b2 在 Boost 1.88 上会静默跳过** `libs/{thread,chrono,filesystem,json}`：其 `Jamfile.v2` 用 `<conditional>@requirements`，不满足时 target 被跳过（组件配置仍显示 "building"，但无 `.lib` 产出，退出码为 0）。改为 `scripts/build_boost_libs.ps1` **直接用 cl.exe 从源码编译** 4 个库 |
+| `RimeStartMaintenance()` / `RimeJoinMaintenanceThread()` 可直接调用 | librime 1.17 的 `rime_api.h` **只把维护接口放在 `RimeApi` vtable**（`start_maintenance` / `join_maintenance_thread`），那两个自由函数虽在 DLL 里导出但不再声明。改用 `rime_get_api()->start_maintenance(true)` |
+| — | **Boost.Thread 还需要 `BOOST_THREAD_BUILD_LIB`**：`win32/tss_pe.cpp` 靠它提供 `boost::tss_cleanup_implemented()`；`tss_null.cpp` 在 MSVC 下被 `!defined(_MSC_VER)` 排除，救不了 |
+| — | **必须链接 `rime.lib`**：上游调用的是 `rime_api.h` 里 `RIME_API`(dllimport) 声明的导出函数。代价：`rime.dll` 变成启动期硬依赖（与上游 Weasel 相同），构建会把 `rime.dll` 拷到输出目录 |
+| — | **`WTL::CAppModule _Module` 要自己提供**：上游由 `WeaselServer/WeaselServer.cpp` 定义、`WeaselIPCServer` 以 extern 引用。本仓取代了 WeaselServer，故在 `src/weasel_module.cpp` 补定义。**它是 WTL 的（`wtl/atlapp.h`）不是 ATL 的** —— VS 18 的 ATL 里已经没有 `atlmod.h`/`CAppModule` |
+
+产出：`WeaselEngine`（`src/weasel_engine.{h,cpp}`）编译并链接通过；`--verify` 14 项仍全绿。
+
 ---
 
 ## File Structure
