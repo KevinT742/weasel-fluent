@@ -22,11 +22,8 @@ constexpr int RIME_KEY_PAGE_DOWN = 0xff56;
 
 /// 候选窗 / 扩展面板 / 托盘所需的引擎能力 —— 设计文档 §4.1 的「切换点」。
 ///
-/// Round 2 起有两个实现：
-///   * `WeaselEngine` —— **服务进程用**，跑官方 Weasel 的 RimeWithWeaselHandler，
-///     状态经 `FluentUiAdapter` 映射后喂给候选窗；
-///   * `RimeEngine`   —— 过渡实现（设计文档 R6），目前只剩设置中心进程与
-///     自检套件在用，随 T7 整体删除。
+/// Round 2 起只有一个实现：`WeaselEngine` —— 跑官方 Weasel 的
+/// `RimeWithWeaselHandler`，状态经 `FluentUiAdapter` 映射后喂给候选窗。
 ///
 /// UI 层只认这个接口，因此切换引擎不需要改 UI 的调用方式。
 class UiEngine : public QObject {

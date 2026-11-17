@@ -3,12 +3,13 @@
 
 #include <QString>
 
-class RimeEngine;
-
-/// Rime 配置操作的抽象。
+/// Rime 配置操作的抽象（设计文档 §4.1 的「切换点」）。
 ///
-/// Round 1 由本仓的 RimeEngine 实现；Round 2 改接官方 Weasel 的
-/// Configurator / Styler / ActionLoader，调用方（设置中心）无需改动。
+/// 实现只有一个：`WeaselConfigClient` —— 走官方 Weasel 的 IPC 通道。
+/// 旧的 `EngineConfigClient`（基于自研 RimeEngine）已随过渡实现一起删除（R6）。
+///
+/// 方案清单 / 用户词库 / 快捷键**不在这个接口里**：它们走文件系统
+/// （`SchemaManager` / `DictionaryManager` / `KeyBindings`），通道边界见 §4.4。
 class RimeConfigClient {
 public:
     virtual ~RimeConfigClient() = default;
@@ -21,21 +22,6 @@ public:
 
     /// 当前生效的方案 id。
     virtual QString activeSchema() const = 0;
-};
-
-/// 基于本仓 RimeEngine 的 RimeConfigClient 实现。
-class EngineConfigClient : public RimeConfigClient {
-public:
-    explicit EngineConfigClient(RimeEngine* engine) : m_engine(engine) {}
-
-    bool deployFull(QString* error) override;
-
-    bool selectSchema(const QString& schemaId, QString* error) override;
-
-    QString activeSchema() const override;
-
-private:
-    RimeEngine* m_engine = nullptr;
 };
 
 #endif // RIME_CONFIG_CLIENT_H

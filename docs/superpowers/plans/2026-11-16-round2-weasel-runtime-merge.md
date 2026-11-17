@@ -153,6 +153,33 @@ T1 执行中撞到三条与计划假设不符的事实，已回写：
 > 但**还不要安装到机器上**：设置中心仍在跑旧引擎、官方 Weasel 也没被替换，
 > 这两件事分别是下一个任务与 T8 的活。
 
+### T7 执行记录（2026-11-17，已完成）—— 设置中心接 Weasel IPC + 删除过渡实现
+
+| 计划原假设 | 实际情况 |
+| :--- | :--- |
+| 部署走 IPC 的 `START_MAINTENANCE` / `END_MAINTENANCE` 即可触发重新部署 | **可以**。服务端收到这对消息后会 `Finalize()` 掉引擎再 `Initialize()`，重新初始化时若工作区过期就触发 Rime 的**增量部署** —— 这正是上游部署器的工作模式（部署器自己 rebuild，再让服务端重启）。所以**设置中心不需要自己持有 librime 实例** |
+| `weasel::Client::Connect()` 可以直接调 | **会把界面卡死**：上游 `PipeChannelBase::_Connect()` 在服务端没起来时会**永远阻塞**在 `WaitNamedPipe` 上。⇒ `WeaselConfigClient::ensureConnected()` 先用 **0 超时**的 `WaitNamedPipe` 探管道，探不到就干净地报错 |
+| 设置中心要读 `weasel::UIStyle` | 走**响应流**：发一个空按键（`KeyEvent(0,0)`，上游 TIP 同一个套路）逼服务端回包，再用上游 `ResponseParser` 反序列化出 `status` 与 `style` |
+| `RimeConfigClient` 保持接口不变即可 | 接口不变，但 `EngineConfigClient`（基于自研 `RimeEngine`）随过渡实现一起删除，只剩 `WeaselConfigClient` |
+
+**产出**：
+
+- 新增 `src/weasel_config_client.{h,cpp}`：`WeaselConfigClient : public RimeConfigClient`，
+  自带一个 `weasel::Client`，实现「部署 / 切方案 / 读当前方案 / 读样式」。
+- 设置中心改用 `RimeConfigClient*`：`RimeEngine*` 彻底不再出现在 UI 层。
+- **删除** `src/rime_engine.{h,cpp}`、`src/rime_config_client.cpp`（过渡实现，R6 达成），
+  以及 `src/ipc_server.*`、`src/input_hook.*`、旧 `tsf/`（T6 已删）。
+  ⇒ 全仓不再有平行的 Rime 引擎或 TSF 实现。
+- 自检套件相应调整：
+  - **TEST 2** 改为「Weasel 运行时（输入 / 候选导航 / 模式切换 / 部署）」——
+    由**独立子进程**的探针（`--verify-weasel-runtime`）执行，断言它覆盖了
+    输入出候选、Down/Up 导航、中英/简繁/全半角切换、`deployFull()`；
+  - **TEST 7** 只保留扩展菜单的检查（引擎切换已由 TEST 2 的探针覆盖）；
+  - **TEST 10** 改为「Weasel IPC 配置通道」：服务在跑时能从响应流读出样式，
+    服务没跑时必须**干净地报错而不是卡死**；
+  - `--capture`（截图）与 `--benchmark`（基准）也改用真实的 `WeaselEngine`
+    + 隔离的 Rime 用户目录，截图与基准数据都来自真实引擎。
+
 ---
 
 ## File Structure

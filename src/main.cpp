@@ -28,7 +28,7 @@
 #include "fluent_ui_adapter.h"
 #include "key_bindings.h"
 #include "paths.h"
-#include "rime_engine.h"
+#include "rime_ui_state.h"
 #include "schema_manager.h"
 #include "skin_manager.h"
 #include "candidate_window.h"
@@ -37,7 +37,9 @@
 #include "extension_panel_window.h"
 #include "tray_menu.h"
 #include "ui_engine.h"
+#include "weasel_config_client.h"
 #include "weasel_engine.h"
+#include <QElapsedTimer>
 #include <QSystemTrayIcon>
 #include <QMenu>
 #include <QAction>
@@ -54,27 +56,54 @@ QString previewOutputDir() {
     return dir;
 }
 
+/// 给本次运行准备一份**隔离的 Rime 用户目录**。
+///
+/// 机器上装着官方 Weasel 时，官方 WeaselServer.exe 正占着 %APPDATA%\Rime 里
+/// 用户词库的 LOCK 文件，本仓的引擎就只能只读词库（输入出不来候选）。
+/// 上游的 WeaselUserDataPath() 支持 WEASEL_USER_DIR 覆盖（见 vendor 补丁 0006），
+/// 环境变量是进程级的，不会动用户的注册表配置。
+QString prepareIsolatedRimeDir(const QString& tag) {
+    const QString dir =
+        QDir(QDir::tempPath()).filePath(QStringLiteral("weasel-fluent-%1-%2")
+                                            .arg(tag)
+                                            .arg(QCoreApplication::applicationPid()));
+    QDir().mkpath(dir);
+    qputenv("WEASEL_USER_DIR", dir.toLocal8Bit().constData());
+    return dir;
+}
+
+/// 等 Weasel 引擎的状态回流。
+///
+/// Weasel 路径是**异步**的：按键投到服务端线程执行，状态再经队列回 Qt 线程，
+/// 所以凡是「发命令 → 看状态」的地方都得等。
+bool waitForState(WeaselEngine& engine,
+                  const std::function<bool(const RimeUiState&)>& predicate,
+                  int timeoutMs = 5000) {
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < timeoutMs) {
+        QCoreApplication::processEvents();
+        if (predicate(engine.uiState())) {
+            return true;
+        }
+        QThread::msleep(10);
+    }
+    return false;
+}
+
 } // namespace
 
 // ============================================================================
 // Weasel 运行时端到端探针（独立进程）
 //
-// 单独拎出来是因为 librime 是**进程级全局单例**：自检套件主体里还有一个
-// 过渡实现的 RimeEngine（TEST 2 用）已经初始化过 librime，同进程再起
-// WeaselEngine 会互相踩（用户词库的 LOCK 抢不到、组合态起不来）。
+// 单独拎出来是因为 librime 是**进程级全局单例**：同一个进程里不能既跑
+// 过渡实现又跑 WeaselEngine（会互抢用户词库的 LOCK，
+// 组合态起不来）。所有依赖 librime 的断言都放在这里。
 // ============================================================================
 int runWeaselRuntimeProbe() {
     std::cout << "[PROBE] Starting the Weasel runtime...\n";
 
-    // 用一个**隔离的 Rime 用户目录**：机器上装着官方 Weasel 时，
-    // 官方 WeaselServer.exe 正占着 %APPDATA%\Rime 的用户词库 LOCK，
-    // 本仓的引擎就只能只读词库（输入出不来候选）。
-    // 上游的 WeaselUserDataPath() 支持 WEASEL_USER_DIR 覆盖（见 vendor 补丁 0006）。
-    const QString probeUserDir =
-        QDir(QDir::tempPath()).filePath(QStringLiteral("weasel-fluent-probe-%1")
-                                            .arg(QCoreApplication::applicationPid()));
-    QDir().mkpath(probeUserDir);
-    qputenv("WEASEL_USER_DIR", probeUserDir.toLocal8Bit().constData());
+    const QString probeUserDir = prepareIsolatedRimeDir(QStringLiteral("probe"));
 
     WeaselEngine weasel;
     QString err;
@@ -95,14 +124,10 @@ int runWeaselRuntimeProbe() {
     weasel.processChar(QChar('o'));
 
     RimeUiState st;
-    for (int i = 0; i < 150; ++i) {
-        QCoreApplication::processEvents();
-        QThread::msleep(20);
-        st = weasel.uiState();
-        if (!st.candidates.isEmpty()) {
-            break;
-        }
-    }
+    waitForState(weasel, [&st](const RimeUiState& s) {
+        st = s;
+        return !s.candidates.isEmpty();
+    });
     if (st.candidates.isEmpty()) {
         std::cerr << "FAIL: Weasel runtime produced no candidates for 'nihao'"
                   << " (schema=" << weasel.currentSchema().toStdString()
@@ -113,6 +138,57 @@ int runWeaselRuntimeProbe() {
     std::cout << "  -> Weasel runtime candidates: " << st.candidates.size()
               << ", first: " << st.candidates[0].text.toUtf8().constData()
               << ", schema: " << weasel.currentSchema().toUtf8().constData() << "\n";
+
+    // 候选导航：Down 前进一格，Up 退回一格。
+    const int firstHighlight = st.highlightedIndex;
+    weasel.processKey(RIME_KEY_DOWN);
+    waitForState(weasel, [&firstHighlight](const RimeUiState& s) {
+        return s.highlightedIndex != firstHighlight;
+    });
+    if (weasel.uiState().highlightedIndex != firstHighlight + 1) {
+        std::cerr << "FAIL: Arrow Down did not advance the highlighted candidate\n";
+        return 1;
+    }
+    weasel.processKey(RIME_KEY_UP);
+    waitForState(weasel, [&firstHighlight](const RimeUiState& s) {
+        return s.highlightedIndex == firstHighlight;
+    });
+    if (weasel.uiState().highlightedIndex != firstHighlight) {
+        std::cerr << "FAIL: Arrow Up did not move the highlighted candidate back\n";
+        return 1;
+    }
+    std::cout << "  -> Candidate navigation (Down / Up) OK\n";
+
+    // 模式切换：中英 / 简繁 / 全半角。
+    // 状态是异步回流的（服务端 → 队列 → Qt 线程），所以给一点时间。
+    weasel.setAsciiMode(true);
+    QThread::msleep(400);
+    if (!weasel.isAsciiMode()) {
+        std::cerr << "FAIL: ascii mode did not propagate to the Weasel status\n";
+        return 1;
+    }
+    weasel.setAsciiMode(false);
+    weasel.setSimplified(true);
+    if (!weasel.isSimplified()) {
+        std::cerr << "FAIL: simplified state was not recorded\n";
+        return 1;
+    }
+    weasel.setFullShape(true);
+    QThread::msleep(400);
+    if (!weasel.isFullShape()) {
+        std::cerr << "FAIL: full shape did not propagate to the Weasel status\n";
+        return 1;
+    }
+    weasel.setFullShape(false);
+    std::cout << "  -> Mode toggles (ascii / simplified / full shape) OK\n";
+
+    // 全量部署（隔离目录里跑真实的 Rime 维护）。
+    QString deployError;
+    if (!weasel.deployFull(&deployError)) {
+        std::cerr << "FAIL: deployFull failed: " << deployError.toStdString() << "\n";
+        return 1;
+    }
+    std::cout << "  -> deployFull() OK\n";
 
     // 桥接：同一个 Context/Status 映射出来的状态必须一致。
     const RimeUiState bridged = FluentUiAdapter::toUiState(weasel.context(), weasel.status());
@@ -187,52 +263,58 @@ int runVerificationSuite() {
     }
     std::cout << "  -> PASS: AppConfig round-trip, system accent & auto resolution OK.\n";
 
-    // 2. Verify RimeEngine
-    std::cout << "[TEST 2] Testing RimeEngine input & candidate navigation...\n";
-    RimeEngine engine;
-    engine.initialize();
-
-    engine.processChar('n');
-    engine.processChar('i');
-    engine.processChar('h');
-    engine.processChar('a');
-    engine.processChar('o');
-
-    RimeUiState st = engine.getUiState();
-    if (!st.isComposing || st.candidates.isEmpty()) {
-        std::cerr << "FAIL: RimeEngine candidates empty for 'nihao'!\n";
-        return 1;
+    // 2. Verify the Weasel runtime (input / candidate navigation / mode toggles / deploy)
+    //
+    // ⚠️ 必须**独立进程**跑：librime 是进程级全局单例，同一个进程里不能既跑
+    // 过渡实现又跑 WeaselEngine（互抢用户词库的 LOCK）。
+    std::cout << "[TEST 2] Testing the Weasel runtime input & candidate navigation...\n";
+    {
+        QProcess proc;
+        proc.start(QCoreApplication::applicationFilePath(),
+                   QStringList() << QStringLiteral("--verify-weasel-runtime"));
+        if (!proc.waitForStarted(10000)) {
+            std::cerr << "FAIL: could not start the Weasel runtime probe\n";
+            return 1;
+        }
+        if (!proc.waitForFinished(180000)) {
+            proc.kill();
+            std::cerr << "FAIL: the Weasel runtime probe timed out\n";
+            return 1;
+        }
+        const QString probeOut = QString::fromLocal8Bit(proc.readAllStandardOutput());
+        std::cout << probeOut.toStdString();
+        if (proc.exitCode() != 0) {
+            std::cerr << "FAIL: the Weasel runtime probe exited with " << proc.exitCode() << "\n";
+            return 1;
+        }
+        std::cout << "  -> PASS: Weasel runtime input & navigation OK.\n";
     }
-    std::cout << "  -> Found " << st.candidates.size() << " candidates. First: "
-              << st.candidates[0].text.toUtf8().constData() << "\n";
-    std::cout << "     preedit: '" << st.preedit.toUtf8().constData() << "'  loaded="
-              << (engine.isLoaded() ? "yes" : "no(sim)") << "  schema="
-              << engine.currentSchema().toUtf8().constData() << "\n";
-    for (int i = 0; i < qMin(5, st.candidates.size()); ++i) {
-        std::cout << "     [" << i << "] " << st.candidates[i].text.toUtf8().constData() << "\n";
-    }
 
-    // Test Down arrow strictly navigates candidate (highlightedIndex goes from 0 to 1)
-    engine.processKey(RIME_KEY_DOWN);
-    st = engine.getUiState();
-    if (st.highlightedIndex != 1) {
-        std::cerr << "FAIL: Arrow Down did not advance candidate selection!\n";
-        return 1;
+    // 候选窗需要一个引擎来驱动；用**空指针**构造，它不会去连任何引擎，
+    // 状态由下面的 updateUiState() 直接灌进去。
+    RimeUiState st;
+    st.isComposing = true;
+    st.preedit = QStringLiteral("ni hao");
+    st.cursorPos = 6;
+    st.highlightedIndex = 0;
+    st.pageNo = 0;
+    st.isLastPage = true;
+    {
+        CandidateItem c0;
+        c0.index = 0;
+        c0.text = QStringLiteral("你好");
+        CandidateItem c1;
+        c1.index = 1;
+        c1.text = QStringLiteral("尼豪");
+        CandidateItem c2;
+        c2.index = 2;
+        c2.text = QStringLiteral("泥好");
+        st.candidates = {c0, c1, c2};
     }
-    std::cout << "  -> PASS: Arrow Down correctly selected candidate index 1.\n";
-
-    // Test Up arrow strictly navigates back (highlightedIndex goes from 1 to 0)
-    engine.processKey(RIME_KEY_UP);
-    st = engine.getUiState();
-    if (st.highlightedIndex != 0) {
-        std::cerr << "FAIL: Arrow Up did not move back candidate selection!\n";
-        return 1;
-    }
-    std::cout << "  -> PASS: Arrow Up correctly returned to candidate index 0.\n";
 
     // 3. Verify CandidateWindow Window Flags
     std::cout << "[TEST 3] Testing CandidateWindow non-activating flags...\n";
-    CandidateWindow candWin(&engine);
+    CandidateWindow candWin(nullptr);
     auto flags = candWin.windowFlags();
     if (!(flags & Qt::Tool) ||
         !(flags & Qt::FramelessWindowHint) ||
@@ -245,7 +327,7 @@ int runVerificationSuite() {
 
     // 4. Verify SettingsWindow construction & fluid navigation indicator
     std::cout << "[TEST 4] Testing SettingsWindow WinUI Gallery construction & fluid navigation indicator...\n";
-    SettingsWindow settingsWin(&engine);
+    SettingsWindow settingsWin(nullptr);
     settingsWin.show();
     QCoreApplication::processEvents();
 
@@ -370,41 +452,9 @@ int runVerificationSuite() {
         return 1;
     }
 
-    // Test engine mode toggles
-    engine.setAsciiMode(true);
-    if (!engine.isAsciiMode()) {
-        std::cerr << "FAIL: Engine failed to switch to ASCII mode!\n";
-        return 1;
-    }
-    engine.setAsciiMode(false);
-    if (engine.isAsciiMode()) {
-        std::cerr << "FAIL: Engine failed to switch back from ASCII mode!\n";
-        return 1;
-    }
+    // 引擎模式切换由 TEST 2 的 Weasel 探针覆盖（模式切换要跑真实引擎）。
 
-    engine.setSimplified(false); // Traditional
-    if (engine.isSimplified()) {
-        std::cerr << "FAIL: Engine failed to switch to Traditional mode!\n";
-        return 1;
-    }
-    engine.setSimplified(true); // Restore simplified
-    if (!engine.isSimplified()) {
-        std::cerr << "FAIL: Engine failed to switch to Simplified mode!\n";
-        return 1;
-    }
-
-    engine.setFullShape(true);
-    if (!engine.isFullShape()) {
-        std::cerr << "FAIL: Engine failed to switch to Full-shape mode!\n";
-        return 1;
-    }
-    engine.setFullShape(false);
-    if (engine.isFullShape()) {
-        std::cerr << "FAIL: Engine failed to switch back from Full-shape mode!\n";
-        return 1;
-    }
-
-    std::cout << "  -> PASS: Extension menu with 12 rich features and engine toggles verified.\n";
+    std::cout << "  -> PASS: Extension menu with 12 rich features verified.\n";
 
     // 8. Verify ExtensionPanelWindow (Scheme A: Microsoft IME style dropdown drawer, 340x200)
     std::cout << "[TEST 8] Testing ExtensionPanelWindow (Scheme A: 340x200 dropdown drawer)...\n";
@@ -502,20 +552,37 @@ int runVerificationSuite() {
     std::cout << "  -> PASS: 5-candidate 1-row dynamic expansion ("
               << singleRowPreview.width() << "x" << singleRowPreview.height() << ") verified.\n";
 
-    // 10. Verify RimeEngine::deployFull() semantics
-    std::cout << "[TEST 10] Testing RimeEngine::deployFull() full rebuild...\n";
+    // 10. Verify the Weasel IPC config channel
+    //
+    // 部署与方案切换走 Weasel IPC（通道边界见设计文档 §4.4）。这里断言
+    // 「服务没跑的时候必须干净地报错，而不是把界面卡死」——
+    // 上游 `weasel::Client::Connect()` 在服务端没起来时会永远阻塞在
+    // WaitNamedPipe 上，所以 WeaselConfigClient 先用 0 超时探管道。
+    std::cout << "[TEST 10] Testing the Weasel IPC config channel...\n";
     {
-        RimeEngine probe;
-        probe.initialize();
+        WeaselConfigClient cfg;
         QString err;
-        const bool deployed = probe.deployFull(&err);
-        if (!probe.isLoaded()) {
-            std::cout << "  -> SKIP: librime not loaded (simulation mode), skipping rebuild assert.\n";
-        } else if (!deployed) {
-            std::cerr << "FAIL: deployFull() returned false: " << err.toStdString() << "\n";
-            return 1;
+        const bool connected = cfg.ensureConnected(&err);
+        if (connected) {
+            // 服务在跑：样式能从响应流里读出来。
+            weasel::UIStyle style;
+            QString styleError;
+            if (!cfg.loadStyle(&style, &styleError)) {
+                std::cerr << "FAIL: could not read the Weasel style over IPC: "
+                          << styleError.toStdString() << "\n";
+                return 1;
+            }
+            std::cout << "  -> PASS: Weasel style read over IPC (font_point="
+                      << style.font_point << ")\n";
         } else {
-            std::cout << "  -> PASS: deployFull() full rebuild succeeded.\n";
+            // 服务没跑：必须干净地返回错误，不能卡住。
+            if (err.isEmpty()) {
+                std::cerr << "FAIL: WeaselConfigClient failed without an error message!\n";
+                return 1;
+            }
+            std::cout << "  -> PASS: WeaselConfigClient reports a clean error when the "
+                         "service is down ("
+                      << err.toStdString() << ")\n";
         }
     }
 
@@ -688,7 +755,7 @@ int runVerificationSuite() {
     // 16. Verify the Weasel runtime end-to-end (server + engine + bridge)
     //
     // ⚠️ 必须**单独进程**跑：librime 是进程级全局单例，而本进程里的过渡实现
-    // RimeEngine（TEST 2 用的）已经 setup + initialize 过它，还持着用户词库
+    // 过渡实现已经 setup + initialize 过它，还持着用户词库
     // 的 LOCK 文件；同一个进程里再起一个 WeaselEngine 只会互相踩
     // （实测报 "另一个程序正在使用此文件" + 组合态起不来）。
     std::cout << "[TEST 16] Testing the Weasel runtime end-to-end...\n";
@@ -726,8 +793,15 @@ int runBenchmarkSuite() {
     std::cout << "      Phase 1: Functional Correctness & Pipeline Audit      \n";
     std::cout << "============================================================\n";
 
-    RimeEngine engine;
-    engine.initialize();
+    // 基准跑**真实的 Weasel 引擎**：用隔离的 Rime 用户目录，
+    // 免得和机器上已装的官方 Weasel 抢用户词库的 LOCK。
+    prepareIsolatedRimeDir(QStringLiteral("bench"));
+    WeaselEngine engine;
+    QString benchEngineError;
+    if (!engine.start(&benchEngineError)) {
+        std::cerr << "FAIL: Weasel engine start failed: " << benchEngineError.toStdString() << "\n";
+        return 1;
+    }
 
     std::vector<std::pair<std::string, std::string>> test_inputs = {
         {"nihao", "你好"},
@@ -745,12 +819,13 @@ int runBenchmarkSuite() {
 
         auto t0 = std::chrono::high_resolution_clock::now();
         for (char ch : pinyin) {
-            engine.processChar(ch);
+            engine.processChar(QChar(ch));
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double typing_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-        RimeUiState state = engine.getUiState();
+        waitForState(engine, [](const RimeUiState& s) { return !s.candidates.isEmpty() || s.isComposing; });
+        RimeUiState state = engine.uiState();
         auto render_t0 = std::chrono::high_resolution_clock::now();
         candWin.renderPreviewImage(1.0);
         auto render_t1 = std::chrono::high_resolution_clock::now();
@@ -789,7 +864,7 @@ int runBenchmarkSuite() {
         engine.processKey(RIME_KEY_ESCAPE);
         for (char ch : phrase) {
             auto t0 = std::chrono::high_resolution_clock::now();
-            engine.processChar(ch);
+            engine.processChar(QChar(ch));
             auto t1 = std::chrono::high_resolution_clock::now();
             double elapsed_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
             key_latencies.push_back(elapsed_us);
@@ -811,7 +886,7 @@ int runBenchmarkSuite() {
     for (const auto& phrase : pinyin_corpus) {
         engine.processKey(RIME_KEY_ESCAPE);
         for (char ch : phrase) {
-            engine.processChar(ch);
+            engine.processChar(QChar(ch));
             auto t0 = std::chrono::high_resolution_clock::now();
             candWin.renderPreviewImage(1.0);
             auto t1 = std::chrono::high_resolution_clock::now();
@@ -836,12 +911,12 @@ int runBenchmarkSuite() {
     int burst_keys = 0;
     auto t_burst_start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < burst_words; ++i) {
-        engine.processChar('n');
-        engine.processChar('i');
-        engine.processChar('h');
-        engine.processChar('a');
-        engine.processChar('o');
-        engine.processChar(' '); // commit top candidate
+        engine.processChar(QChar('n'));
+        engine.processChar(QChar('i'));
+        engine.processChar(QChar('h'));
+        engine.processChar(QChar('a'));
+        engine.processChar(QChar('o'));
+        engine.processChar(QChar(' ')); // commit top candidate
         burst_keys += 6;
     }
     auto t_burst_end = std::chrono::high_resolution_clock::now();
@@ -1011,20 +1086,6 @@ int main(int argc, char* argv[]) {
 
     parser.process(app);
 
-    // 临时诊断：把未捕获异常打出来（terminate handler）。
-    std::set_terminate([]() {
-        try {
-            if (auto e = std::current_exception()) {
-                std::rethrow_exception(e);
-            }
-        } catch (const std::exception& ex) {
-            std::cerr << "[terminate] std::exception: " << ex.what() << "\n";
-        } catch (...) {
-            std::cerr << "[terminate] unknown exception\n";
-        }
-        std::abort();
-    });
-
     if (parser.isSet(themeOption)) {
         QString tm = parser.value(themeOption).toLower();
         if (tm == QStringLiteral("light") || tm == QStringLiteral("dark") || tm == QStringLiteral("system")) {
@@ -1047,10 +1108,16 @@ int main(int argc, char* argv[]) {
     }
 
     if (parser.isSet(captureOption)) {
-        // 截图模式用过渡实现（自研 RimeEngine）：它能离线造出候选词，
-        // 不依赖服务端的 Rime 档案。
-        RimeEngine engine;
-        engine.initialize();
+        // 截图模式跑**真实的 Weasel 引擎**：用隔离的 Rime 用户目录，
+        // 免得和机器上已装的官方 Weasel 抢用户词库的 LOCK。
+        const QString captureRimeDir = prepareIsolatedRimeDir(QStringLiteral("capture"));
+        WeaselEngine engine;
+        QString engineError;
+        if (!engine.start(&engineError)) {
+            std::cerr << "[CAPTURE] Weasel engine start failed: "
+                      << engineError.toStdString() << "\n";
+            return 1;
+        }
         std::cout << "[CAPTURE] Capturing CandidateWindow and SettingsWindow screenshots...\n";
         std::cout << "  Theme mode: " << cfg.themeMode().toUtf8().constData() << "\n";
         std::cout << "  isDarkTheme: " << (cfg.isDarkTheme() ? "true" : "false") << "\n";
@@ -1060,11 +1127,12 @@ int main(int argc, char* argv[]) {
         std::cout << "  fontSize: " << cfg.fontSize() << "\n";
 
         // 1. Candidate Window (Horizontal)
-        engine.processChar('n');
-        engine.processChar('i');
-        engine.processChar('h');
-        engine.processChar('a');
-        engine.processChar('o');
+        engine.processChar(QChar('n'));
+        engine.processChar(QChar('i'));
+        engine.processChar(QChar('h'));
+        engine.processChar(QChar('a'));
+        engine.processChar(QChar('o'));
+        waitForState(engine, [](const RimeUiState& s) { return !s.candidates.isEmpty(); });
 
         cfg.setOrientation(QStringLiteral("horizontal"));
         CandidateWindow candWin(&engine);
@@ -1108,7 +1176,7 @@ int main(int argc, char* argv[]) {
         emojiPicker.renderPreviewImage(2.0).save(previewOutputDir() + QStringLiteral("/emoji_picker_symbols.png"));
 
         // 4. Settings Window
-        SettingsWindow settingsWin(&engine);
+        SettingsWindow settingsWin(nullptr);
         settingsWin.show();
         settingsWin.raise();
         settingsWin.activateWindow();
@@ -1217,18 +1285,17 @@ int main(int argc, char* argv[]) {
 
     if (parser.isSet(settingsOption)) {
         // 设置中心是**独立进程**（候选窗点「设置」时另起进程）。
-        // 它自带一份 librime 实例（过渡实现），部署在本地完成；
-        // Round 2 的下一步会把它改成走 Weasel IPC（设计文档 §4.4）。
-        RimeEngine engine;
-        engine.initialize();
-        SettingsWindow settingsWin(&engine);
+        // 它通过 Weasel IPC 与服务通信：部署走 maintenance 消息对，样式从
+        // 响应流里读（通道边界见设计文档 §4.4）。
+        WeaselConfigClient config;
+        SettingsWindow settingsWin(&config);
         settingsWin.show();
         return app.exec();
     }
 
     // ── 服务模式：官方 Weasel 内核 ───────────────────────────────────────
     // librime 是**进程级全局单例**，服务进程里只能有一份引擎：
-    // 这里必须是 WeaselEngine，不能再叠一个 RimeEngine。
+    // 这里必须是 WeaselEngine，不能再叠第二份引擎。
     //
     // 单实例守卫要先于引擎启动：否则重复实例会先抢 IPC 管道再退出。
     HANDLE hSingleMutex = CreateMutexW(nullptr, FALSE, L"WeaselFluentSingleInstanceMutex");
@@ -1265,11 +1332,11 @@ int main(int argc, char* argv[]) {
 
     if (parser.isSet(demoOption)) {
         // Standalone demonstration: input "nihao" so candidate window shows immediately.
-        engine.processChar('n');
-        engine.processChar('i');
-        engine.processChar('h');
-        engine.processChar('a');
-        engine.processChar('o');
+        engine.processChar(QChar('n'));
+        engine.processChar(QChar('i'));
+        engine.processChar(QChar('h'));
+        engine.processChar(QChar('a'));
+        engine.processChar(QChar('o'));
         // Weasel 路径是异步的（按键投到服务端线程，状态再回流），
         // 这里等状态回来再显示。
         for (int i = 0; i < 60; ++i) {

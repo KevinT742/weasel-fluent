@@ -1,7 +1,7 @@
 #include "tray_menu.h"
 
 #include "config.h"
-#include "rime_engine.h"
+#include "ui_engine.h"
 #include "ui_glyph_icon.h"
 
 #include <QApplication>

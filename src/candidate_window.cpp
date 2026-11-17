@@ -1461,7 +1461,7 @@ fluent::menus_toolbars::FluentMenu* CandidateWindow::createExtensionMenu() {
     const QColor iconColor = isDark ? QColor(220, 220, 220) : QColor(50, 50, 50);
 
     // 1. 中/英文模式 (Chinese / English)
-    // 状态来自 Weasel 桥接推送的 status.ascii_mode（自研引擎路径由 RimeEngine::modeChanged 推送）。
+    // 状态来自 Weasel 桥接推送的 status.ascii_mode。
     const bool isAscii = asciiMode();
     auto* actLang = menu->addAction(isAscii ? QStringLiteral("中/英文模式 (当前: 英文)") : QStringLiteral("中/英文模式 (当前: 中文)"));
     actLang->setIcon(createFluentMenuIcon(Typography::Icons::World, iconColor));

@@ -32,7 +32,7 @@ public:
     void updateFromWeasel(const weasel::Context& ctx, const weasel::Status& status);
 
     /// 中/英文模式。Weasel 路径由 status.ascii_mode 推送，
-    /// 自研 RimeEngine 路径由 RimeEngine::modeChanged 推送。
+    /// 由 Weasel 桥接推送的 status.ascii_mode 驱动。
     void setAsciiMode(bool ascii);
     bool asciiMode() const { return m_asciiMode; }
 

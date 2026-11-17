@@ -24,7 +24,7 @@
 #include "design/Typography.h"
 #include "compatibility/QtCompat.h"
 #include "config.h"
-#include "rime_engine.h"
+#include "rime_config_client.h"
 #include "candidate_window.h"
 
 /**
@@ -115,7 +115,7 @@ class SettingsWindow : public fluent::windowing::Window {
     Q_OBJECT
 
 public:
-    explicit SettingsWindow(RimeEngine* engine = nullptr, QWidget* parent = nullptr);
+    explicit SettingsWindow(RimeConfigClient* config = nullptr, QWidget* parent = nullptr);
     ~SettingsWindow() override = default;
 
     void selectNavigationRow(int row);
@@ -172,7 +172,7 @@ private:
     QWidget* createSectionHeader(const QString& title);
     QWidget* createPageHeader(const QString& title, const QString& subtitle);
 
-    RimeEngine* m_engine = nullptr;
+    RimeConfigClient* m_config = nullptr;
 
     SettingsNavPane* m_navPane = nullptr;
     fluent::navigation::StackContentHost* m_pagesHost = nullptr;

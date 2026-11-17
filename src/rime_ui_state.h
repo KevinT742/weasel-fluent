@@ -13,7 +13,7 @@ struct CandidateItem {
 
 /// 候选窗状态。
 ///
-/// 它既能从自研 RimeEngine 取到，也能从官方 Weasel 的
+/// 它既能从官方 Weasel 的
 /// `weasel::Context`/`weasel::Status` 映射得到（见 `fluent_ui_adapter.h`），
 /// 因此单独成头，UI 层不必知道状态是从哪来的。
 struct RimeUiState {
@@ -26,7 +26,7 @@ struct RimeUiState {
     bool isLastPage = false;
     QString commitText;
     /// 中/英文模式。Weasel 路径由 weasel::Status::ascii_mode 提供，
-    /// 自研 RimeEngine 路径由 setAsciiMode() 维护。
+    /// 由 Weasel 桥接推送的 status.ascii_mode 驱动。
     bool asciiMode = false;
 };
 

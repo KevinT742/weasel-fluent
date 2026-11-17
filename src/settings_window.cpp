@@ -748,8 +748,8 @@ void HeroPreviewCard::leaveEvent(QEvent* event) {
 // SettingsWindow Implementation (Windows 11 Settings Center Architecture)
 // ============================================================================
 
-SettingsWindow::SettingsWindow(RimeEngine* engine, QWidget* parent)
-    : fluent::windowing::Window(parent), m_engine(engine) {
+SettingsWindow::SettingsWindow(RimeConfigClient* config, QWidget* parent)
+    : fluent::windowing::Window(parent), m_config(config) {
     setWindowTitle(QStringLiteral("设置"));
     resize(1000, 720);
     setMinimumSize(850, 560);
@@ -1537,8 +1537,8 @@ QWidget* SettingsWindow::createMaintenancePage() {
 
     // 1. Engine Status
     auto* lblEngineStatus = new fluent::textfields::Label(
-        m_engine && m_engine->isLoaded() ? QStringLiteral("rime.dll 已就绪 (动态加载)")
-                                         : QStringLiteral("仿真模拟模式 (Simulation)"));
+        m_config ? QStringLiteral("已连接 Weasel 服务")
+                 : QStringLiteral("未连接 Weasel 服务（部署与方案切换不可用）"));
     lblEngineStatus->setFluentTypography(Typography::FontRole::Body);
     lblEngineStatus->setTextColorRole(fluent::textfields::Label::TextColorRole::Primary);
 
@@ -1581,9 +1581,9 @@ QWidget* SettingsWindow::createMaintenancePage() {
             return;
         }
         refreshDictionaryList();
-        if (m_engine) {
+        if (m_config) {
             QString deployError;
-            m_engine->deployFull(&deployError);
+            m_config->deployFull(&deployError);
         }
         m_lblDictList->setText(QStringLiteral("已导入并重新部署"));
     });
@@ -1602,9 +1602,9 @@ QWidget* SettingsWindow::createMaintenancePage() {
             return;
         }
         refreshDictionaryList();
-        if (m_engine) {
+        if (m_config) {
             QString deployError;
-            m_engine->deployFull(&deployError);
+            m_config->deployFull(&deployError);
         }
     });
 
@@ -1902,17 +1902,12 @@ void SettingsWindow::onSchemaChanged(int index) {
     }
     const QString schemaId = schemas.at(index).id;
 
-    QString error;
-    if (!SchemaManager::instance().writeSchemaSelection(schemaId, &error)) {
-        if (m_lblDeployStatus) m_lblDeployStatus->setText(error);
-        return;
-    }
     AppConfig::instance().setSchema(schemaId);
 
-    if (m_engine) {
-        m_engine->selectSchema(schemaId);
+    if (m_config) {
+        // 方案清单走文件系统、部署走 Weasel IPC（通道边界见设计文档 §4.4）。
         QString deployError;
-        if (!m_engine->deployFull(&deployError)) {
+        if (!m_config->selectSchema(schemaId, &deployError)) {
             if (m_lblDeployStatus) m_lblDeployStatus->setText(deployError);
             return;
         }
@@ -2062,8 +2057,12 @@ void SettingsWindow::onSearchFilterChanged(const QString& query) {
 
 void SettingsWindow::onDeployClicked() {
     m_lblDeployStatus->setText(QStringLiteral("部署中..."));
-    if (m_engine) {
-        m_engine->deploy();
+    QString error;
+    if (!m_config || !m_config->deployFull(&error)) {
+        m_lblDeployStatus->setText(error.isEmpty()
+                                       ? QStringLiteral("部署失败：未连接 Weasel 服务")
+                                       : error);
+        return;
     }
     m_lblDeployStatus->setText(QStringLiteral("部署完成"));
 }
