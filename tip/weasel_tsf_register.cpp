@@ -23,6 +23,8 @@
 // `0804:{A3F4CDED-…}{3D02CAB6-…}` 条目直接生效，不需要再往语言列表里加东西。
 // 卸载时删掉 HKCU 这几项，官方 Weasel 立刻恢复。
 //
+// Patch 0010: FilterLangIdsBySystemUi — 注册期按系统 UI 语言只登记对应的子语言变体，
+//   避免 zh-CN 系统弹出多个「萬象拼音」选项。
 // 本文件实现的 6 个函数与上游 `WeaselTSF/Register.h` 的声明一一对应，
 // 上游 `WeaselTSF/Server.cpp`（DllRegisterServer / DllUnregisterServer）直接调用它们。
 
@@ -60,6 +62,7 @@ void regLog(const wchar_t* fmt, ...) {
 }
 
 /// 语言配置 id：与上游 WeaselTSF/Globals.h 一致。
+/// 全部保留用于 UnregisterProfiles（清盘旧条目）和编译期断言。
 constexpr LANGID kLangIds[] = {
     MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED),
     MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL),
@@ -67,6 +70,41 @@ constexpr LANGID kLangIds[] = {
     MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_MACAU),
     MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SINGAPORE),
 };
+static_assert(sizeof(kLangIds) / sizeof(kLangIds[0]) <= 5, "kLangIds must have ≤ 5 entries");
+
+/// LCID → LANGID 映射表（Patch 0010）。
+/// 键是完整 LCID（含主语言+子语言），值为匹配的子语言 LANGID。
+struct UiLangMapEntry {
+    LCID lcid;
+    LANGID sublangId;
+};
+
+constexpr UiLangMapEntry uiLangMap[] = {
+    { 0x0804, MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED) }, // zh-CN
+    { 0x0404, MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL) }, // zh-TW
+    { 0x0c04, MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_HONGKONG) }, // zh-HK
+    { 0x1004, MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SINGAPORE) }, // zh-SG
+};
+static_assert(sizeof(uiLangMap) / sizeof(uiLangMap[0]) <= 5, "uiLangMap must have ≤ 4 entries");
+
+/// 调试日志：同时写 OutputDebugStringW 和 %TEMP%\weasel-fluent-register.log。
+void debugLog(const wchar_t* fmt, ...);
+
+/// 根据系统 UI 语言过滤 LANGID。通过 outBuf[0] 写入匹配的子语言，返回数量。
+size_t filterLangIdsBySystemUi(WCHAR* outBuf, size_t bufSize) {
+    const LCID sysLcid = GetUserDefaultUILanguage();
+    outBuf[0] = static_cast<WCHAR>(kLangIds[0]); // fallback: Simplified
+
+    for (size_t i = 0; i < sizeof(uiLangMap) / sizeof(uiLangMap[0]); ++i) {
+        if (uiLangMap[i].lcid == sysLcid) {
+            outBuf[0] = static_cast<WCHAR>(uiLangMap[i].sublangId);
+            return 1;
+        }
+    }
+    debugLog(L"[weasel-fluent] filterLangIdsBySystemUi: 系统 UI LCID=0x%04lx 未匹配，回退到 0x%04x（简体中文）",
+             sysLcid, static_cast<unsigned>(kLangIds[0]));
+    return 1;
+}
 
 /// 语言栏里显示的名字。官方 Weasel 用 `get_weasel_ime_name()`（返回「小狼毫」/「Weasel」），
 /// 本仓强调是 Fluent 前端，故加后缀区分。
@@ -156,11 +194,12 @@ bool installLanguageProfileTip(const std::wstring& tipString) {
 ///        的 Description / IconFile / IconIndex / Enable）；
 ///      TSF 读取时 HKCU 优先于 HKLM，规则和 COM 类一样。
 ///   2. 用系统的 `InstallLayoutOrTip` 把这个 TIP 加进**用户语言列表**。
-BOOL writeUserLanguageProfiles(const wchar_t* dllPath) {
+BOOL writeUserLanguageProfiles(const wchar_t* dllPath, const WCHAR* langBuf, size_t count) {
     const std::wstring clsidStr = guidToString(c_clsidTextService);
     const std::wstring profileStr = guidToString(c_guidProfile);
 
-    for (LANGID langId : kLangIds) {
+    for (size_t i = 0; i < count; ++i) {
+        const LANGID langId = static_cast<LANGID>(langBuf[i]);
         wchar_t langKey[16] = {0};
         swprintf_s(langKey, _countof(langKey), L"0x%08X", static_cast<unsigned>(langId));
         const std::wstring key = std::wstring(L"Software\\Microsoft\\CTF\\TIP\\") +
@@ -175,7 +214,12 @@ BOOL writeUserLanguageProfiles(const wchar_t* dllPath) {
                  ok ? L"OK" : L"失败");
     }
 
-    const std::wstring tipString = std::wstring(L"0804:") + clsidStr + profileStr;
+    // InstallLayoutOrTip tipString 格式: "<LCID>:{clsid}{profile}"，
+    // 其中前四位必须与系统实际语言相符，否则 Windows 语言列表可能忽略该条目。
+    const LANGID primaryLang = count > 0 ? static_cast<LANGID>(langBuf[0]) : kLangIds[0];
+    wchar_t prefix[8] = {0};
+    swprintf_s(prefix, _countof(prefix), L"%04X:", static_cast<unsigned>(primaryLang));
+    const std::wstring tipString = std::wstring(prefix) + clsidStr + profileStr;
     const bool installed = installLanguageProfileTip(tipString);
     debugLog(L"[weasel-fluent] RegisterProfiles: InstallLayoutOrTip(%s) %s",
              tipString.c_str(), installed ? L"OK" : L"未生效（可能已有同一条目）");
@@ -242,7 +286,11 @@ BOOL RegisterProfiles() {
     if (FAILED(hr) || !profiles) {
         debugLog(L"[weasel-fluent] RegisterProfiles: 取 ITfInputProcessorProfiles 失败 hr=0x%08X（非致命，走 HKCU）", hr);
         CoUninitialize();
-        return writeUserLanguageProfiles(dllPath);
+        // TSF 不可用时，直接从 HKCU 注册并添加至用户语言列表。
+        constexpr size_t K_MAX_LANGS = sizeof(kLangIds) / sizeof(kLangIds[0]);
+        WCHAR langBuf[K_MAX_LANGS] = {0};
+        const size_t filteredCount = filterLangIdsBySystemUi(langBuf, K_MAX_LANGS);
+        return writeUserLanguageProfiles(dllPath, langBuf, filteredCount);
     }
     debugLog(L"[weasel-fluent] RegisterProfiles: 拿到 ITfInputProcessorProfiles");
 
@@ -251,8 +299,31 @@ BOOL RegisterProfiles() {
     const HRESULT regHr = profiles->Register(c_clsidTextService);
     debugLog(L"[weasel-fluent] RegisterProfiles: Register(clsid) hr=0x%08X", regHr);
 
+    // Patch 0010: 过滤后的 LANGID 数组 — 仅向系统 UI 对应的语言注册。
+    constexpr size_t K_MAX_LANGS = sizeof(kLangIds) / sizeof(kLangIds[0]);
+    WCHAR filteredLangBuf[K_MAX_LANGS] = {0};
+    size_t filteredCount = 0;
+    const LCID sysLcid = GetUserDefaultUILanguage();
+
+    for (size_t i = 0; i < sizeof(uiLangMap) / sizeof(uiLangMap[0]); ++i) {
+        if (uiLangMap[i].lcid == sysLcid) {
+            // 精确匹配 —— 仅注册该子语言。
+            filteredLangBuf[filteredCount++] = static_cast<WCHAR>(uiLangMap[i].sublangId);
+            break;
+        }
+    }
+    if (filteredCount == 0) {
+        // 未匹配到任何已知 UI 语言 → fallback 为简体中文。
+        filteredLangBuf[0] = static_cast<WCHAR>(kLangIds[0]);
+        filteredCount = 1;
+    }
+
+    debugLog(L"[weasel-fluent] RegisterProfiles: 系统 UI LCID=0x%04lx → 注册 %zu 种语言变体",
+             sysLcid, filteredCount);
+
     BOOL ok = TRUE;
-    for (LANGID langId : kLangIds) {
+    for (size_t i = 0; i < filteredCount; ++i) {
+        const LANGID langId = static_cast<LANGID>(filteredLangBuf[i]);
         const HRESULT add = profiles->AddLanguageProfile(
             c_clsidTextService, langId, c_guidProfile, kTextServiceDesc, descLen,
             dllPath, pathLen, 0);
@@ -268,7 +339,8 @@ BOOL RegisterProfiles() {
 
     profiles->Release();
     CoUninitialize();
-    return writeUserLanguageProfiles(dllPath);
+    // HKCU 逐用户注册（含 InstallLayoutOrTip）使用相同的过滤数组。
+    return writeUserLanguageProfiles(dllPath, filteredLangBuf, filteredCount);
 }
 
 void UnregisterProfiles() {
@@ -280,6 +352,7 @@ void UnregisterProfiles() {
                                    IID_ITfInputProcessorProfiles,
                                    reinterpret_cast<void**>(&profiles))) &&
         profiles) {
+        // 卸载时注销所有 5 个子语言变体，防止手动编辑配置后残留条目。
         for (LANGID langId : kLangIds) {
             profiles->RemoveLanguageProfile(c_clsidTextService, langId,
                                            c_guidProfile);
