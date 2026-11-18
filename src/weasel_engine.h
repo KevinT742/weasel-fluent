@@ -20,6 +20,10 @@
 #include <string>
 #include <thread>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
 #include "ui_engine.h"
 
 /// 封装官方 Weasel 的 Rime 引擎与 IPC 服务端。
@@ -92,6 +96,15 @@ public:
     /// IPC 服务端窗口句柄（安装器与托盘用）。
     HWND serverHwnd() const;
 
+    /// 最后一组已知输入框矩形（仅 EDIT/RICHEDIT 类时有效）。
+    struct InputBoxRect {
+        bool valid = false;
+        QRect rect; // logical pixels
+    };
+    InputBoxRect lastInputBox() const;
+    /// 设置输入框矩形（从服务端线程调用，Qt-safe）。
+    void setInputBox(const QRect& rc);
+
     /// 服务端是否已就绪。
     bool isRunning() const { return m_running.load(); }
 
@@ -158,6 +171,10 @@ private:
     weasel::Context m_context;
     weasel::Status m_status;
     weasel::UIStyle m_style;
+
+    /// 输入框矩形（仅 EDIT/RICHEDIT 类焦点控件时有效），由 InputFocusDetector 更新。
+    mutable QMutex m_inputBoxMutex;
+    InputBoxRect m_lastInputBox;
 
     QMutex m_commandMutex;
     std::deque<Command> m_commands;

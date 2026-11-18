@@ -67,7 +67,8 @@ LRESULT CALLBACK CommandWindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
 /// 不用改 vendor 源码。
 class TrackingHandler : public RimeWithWeaselHandler {
 public:
-    explicit TrackingHandler(weasel::UI* ui) : RimeWithWeaselHandler(ui) {}
+    explicit TrackingHandler(weasel::UI* ui, WeaselEngine* engine)
+        : RimeWithWeaselHandler(ui), m_engine(engine) {}
 
     BOOL ProcessKeyEvent(weasel::KeyEvent keyEvent, WeaselSessionId ipc_id,
                          EatLine eat) override {
@@ -75,10 +76,23 @@ public:
         return RimeWithWeaselHandler::ProcessKeyEvent(keyEvent, ipc_id, eat);
     }
 
+    void UpdateInputPosition(RECT const& rc, WeaselSessionId ipc_id) override {
+        // [weasel-fluent] Pass input-box rect to WeaselEngine for candidate
+        // window follow. Only called when the TIP client provides one
+        // (EDIT/RICHEDIT text boxes). For other controls TIP still sends
+        // a thin "caret-at-cursor" rect, but our detector ignores it.
+        if (m_engine) {
+            m_engine->setInputBox(QRect(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top));
+        }
+        m_lastSessionId.store(ipc_id);
+        RimeWithWeaselHandler::UpdateInputPosition(rc, ipc_id);
+    }
+
     WeaselSessionId lastSessionId() const { return m_lastSessionId.load(); }
 
 private:
     std::atomic<WeaselSessionId> m_lastSessionId{0};
+    WeaselEngine* m_engine = nullptr;
 };
 
 } // namespace
@@ -97,7 +111,7 @@ bool WeaselEngine::start(QString* error) {
     // weasel::UI 只作数据载体：绝不 Create()，因此不会有 D2D 候选面板窗口。
     m_ui = new weasel::UI();
 
-    m_handler = std::make_unique<TrackingHandler>(m_ui);
+    m_handler = std::make_unique<TrackingHandler>(m_ui, this);
 
     m_server = new weasel::Server();
     m_server->SetRequestHandler(m_handler.get());
@@ -336,6 +350,18 @@ weasel::Status WeaselEngine::status() const {
 weasel::UIStyle WeaselEngine::style() const {
     QMutexLocker lock(&m_stateMutex);
     return m_style;
+}
+
+void WeaselEngine::setInputBox(const QRect& rc) {
+    // Called from IPC server thread (TrackingHandler on the pipe worker thread).
+    // Store with mutex; Qt thread reads via lastInputBox().
+    QMutexLocker lock(&m_inputBoxMutex);
+    m_lastInputBox = {true, rc};
+}
+
+WeaselEngine::InputBoxRect WeaselEngine::lastInputBox() const {
+    QMutexLocker lock(&m_inputBoxMutex);
+    return m_lastInputBox;
 }
 
 void WeaselEngine::onServerThreadUpdate() {

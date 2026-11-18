@@ -3,6 +3,7 @@
 
 #include <QString>
 #include <QVector>
+#include <QRect>
 
 /// 一个候选项。
 struct CandidateItem {
@@ -30,6 +31,8 @@ struct RimeUiState {
     bool asciiMode = false;
     /// 全/半角模式。Weasel 路径由 weasel::Status::full_shape 提供。
     bool fullShape = false;
+    /// 输入框矩形（逻辑像素，仅 EDIT/RICHEDIT 焦点控件时有效）。
+    QRectF inputBoxRect;
 };
 
 #endif // RIME_UI_STATE_H

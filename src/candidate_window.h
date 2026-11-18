@@ -42,6 +42,9 @@ public:
     QSize calculatedSize() const { return m_calculatedSize; }
     void moveToPosition(const QPoint& pt);
 
+    /// 设置输入框矩形（来自 WeaselEngine），用于候选窗跟随。
+    void setInputBoxRect(const QRectF& rc);
+
     void toggleEmojiPicker();
     void showCustomEmojiPicker();
     class EmojiPickerWindow* emojiPicker() const { return m_emojiPicker; }

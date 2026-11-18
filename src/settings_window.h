@@ -167,7 +167,11 @@ private:
     /// 把界面上的 Weasel 样式写回 weasel.yaml 并请求重新部署。
     void applyWeaselStyle();
 
+    /// 从指定目录导入 *.schema.yaml 到用户 Rime 数据目录。
+    void importSchemasFromDirectory(const QString& dirPath);
+
     QWidget* createNavigationPane();
+    QWidget* createSchemaPage();
     QWidget* createPersonalizationPage();
     QWidget* createInputPage();
     QWidget* createMaintenancePage();
@@ -220,6 +224,10 @@ private:
     fluent::basicinput::Button* m_btnImportSkin = nullptr;
     fluent::basicinput::Button* m_btnExportSkin = nullptr;
     fluent::textfields::Label* m_lblSkinStatus = nullptr;
+
+    /// 输入方案页专用：默认方案标签与可用方案 ID 缓存。
+    fluent::textfields::Label* m_lblDefaultStatus = nullptr;
+    QVector<QString> m_availableSchemaIds;
 
     // Weasel 状态栏样式（内容层，weasel.yaml）
     fluent::basicinput::ComboBox* m_comboWeaselFontFace = nullptr;

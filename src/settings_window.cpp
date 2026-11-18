@@ -24,6 +24,7 @@
 #include <QDir>
 #include <QDateTime>
 #include <QFileInfo>
+#include <QMessageBox>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -400,6 +401,7 @@ SettingsNavPane::SettingsNavPane(fluent::FluentElement* themeHost, QWidget* pare
     };
     const NavEntry entries[] = {
         {QStringLiteral("个性化与排版"), Typography::Icons::Brush},
+        {QStringLiteral("输入法方案"), Typography::Icons::Upload},
         {QStringLiteral("输入与按键"), Typography::Icons::Keyboard},
         {QStringLiteral("词库与维护"), Typography::Icons::Folder},
         {QStringLiteral("关于与系统"), Typography::Icons::Info}
@@ -956,9 +958,10 @@ void SettingsWindow::setupUi() {
     revealWindowMaterial(m_pagesHost);
 
     m_pagesHost->insertPage(0, createPersonalizationPage());
-    m_pagesHost->insertPage(1, createInputPage());
-    m_pagesHost->insertPage(2, createMaintenancePage());
-    m_pagesHost->insertPage(3, createAboutPage());
+    m_pagesHost->insertPage(1, createSchemaPage());
+    m_pagesHost->insertPage(2, createInputPage());
+    m_pagesHost->insertPage(3, createMaintenancePage());
+    m_pagesHost->insertPage(4, createAboutPage());
 
     bodyLayout->addWidget(m_pagesHost, 1);
 
@@ -1050,6 +1053,150 @@ QWidget* SettingsWindow::createSectionHeader(const QString& title) {
     lbl->setTextColorRole(fluent::textfields::Label::TextColorRole::Primary);
     l->addWidget(lbl);
     return sec;
+}
+
+// ----------------------------------------------------------------------------
+// Page 1: 输入法方案 (Rime Schema Management)
+// ----------------------------------------------------------------------------
+QWidget* SettingsWindow::createSchemaPage() {
+    auto* scroll = new SettingsScrollView();
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarVisibility(fluent::scrolling::ScrollView::ScrollBarVisibility::Hidden);
+
+    auto* container = new QWidget();
+    revealWindowMaterial(container);
+    auto* layout = new QVBoxLayout(container);
+    layout->setContentsMargins(36, 20, 36, 36);
+    layout->setSpacing(6);
+
+    layout->addWidget(createPageHeader(
+        QStringLiteral("输入法方案"),
+        QStringLiteral("管理当前生效的方案、可用方案列表与默认方案")));
+
+    // Card 1: Currently Active Schema
+    auto* activeLbl = new fluent::textfields::Label(
+        m_config ? m_config->activeSchema() : QStringLiteral("(未加载)"));
+    activeLbl->setFluentTypography(Typography::FontRole::Body);
+    activeLbl->setTextColorRole(fluent::textfields::Label::TextColorRole::Primary);
+    activeLbl->setObjectName(QStringLiteral("activeSchemaLabel"));
+
+    layout->addWidget(new SettingsCard(
+        Typography::Icons::Document,
+        QStringLiteral("当前生效方案"),
+        activeLbl->text(),
+        nullptr, QColor(0, 164, 239), container));
+
+    // Card 2: Available Schema List + Select
+    refreshSchemaList();
+    auto* schemaBox = new QWidget();
+    auto* schemaLayout = new QHBoxLayout(schemaBox);
+    schemaLayout->setContentsMargins(0, 0, 0, 0);
+    schemaLayout->setSpacing(8);
+    schemaLayout->addWidget(m_comboSchema);
+    schemaLayout->addWidget(m_btnRefreshSchemas);
+    connect(m_comboSchema, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &SettingsWindow::onSchemaChanged);
+
+    layout->addWidget(new SettingsCard(
+        Typography::Icons::Grid,
+        QStringLiteral("可用方案列表"),
+        QStringLiteral("从以下已安装方案中选择，选择后将自动重新部署生效"),
+        schemaBox, QColor(0, 164, 239), container));
+
+    // Card 3: Import External Schemas
+    auto* btnImport = new fluent::basicinput::Button(QStringLiteral("从目录导入"));
+    btnImport->setFluentStyle(fluent::basicinput::Button::Standard);
+    connect(btnImport, &fluent::basicinput::Button::clicked, this, [this]() {
+        QString dir = QFileDialog::getExistingDirectory(this,
+            QStringLiteral("选择包含 .schema.yaml 文件的目录"),
+            WeaselPaths::sharedDataDir().isEmpty()
+                ? QDir::homePath()
+                : QFileInfo(WeaselPaths::sharedDataDir()).absolutePath());
+        if (!dir.isEmpty()) {
+            importSchemasFromDirectory(dir);
+        }
+    });
+
+    layout->addWidget(new SettingsCard(
+        Typography::Icons::Download,
+        QStringLiteral("导入外部方案"),
+        QStringLiteral("浏览目录并导入符合 Rime 规范的 .schema.yaml 文件"),
+        btnImport, QColor(16, 124, 65), container));
+
+    // Card 4: Default Schema (previously_selected_schema)
+    auto* defaultBtn = new fluent::basicinput::Button(QStringLiteral("设为首次启动默认"));
+    defaultBtn->setFluentStyle(fluent::basicinput::Button::Standard);
+    connect(defaultBtn, &fluent::basicinput::Button::clicked, this, [this]() {
+        int idx = m_comboSchema->currentIndex();
+        if (idx >= 0 && idx < static_cast<int>(m_availableSchemaIds.size())) {
+            const QString& id = m_availableSchemaIds[idx];
+            QString err;
+            if (SchemaManager::instance().writeSchemaSelection(id, &err)) {
+                m_lblDefaultStatus->setText(QStringLiteral("已就绪") + id);
+            } else {
+                m_lblDefaultStatus->setText(QStringLiteral("失败: ") + err);
+            }
+        }
+    });
+
+    m_lblDefaultStatus = new fluent::textfields::Label(QStringLiteral("未设置"), container);
+    m_lblDefaultStatus->setFluentTypography(Typography::FontRole::Caption);
+    m_lblDefaultStatus->setTextColorRole(fluent::textfields::Label::TextColorRole::Secondary);
+
+    auto* defaultBox = new QWidget();
+    auto* defaultL = new QVBoxLayout(defaultBox);
+    defaultL->setContentsMargins(0, 4, 0, 0);
+    defaultL->setSpacing(6);
+    defaultL->addWidget(defaultBtn);
+    defaultL->addWidget(m_lblDefaultStatus);
+
+    layout->addWidget(new SettingsCard(
+        Typography::Icons::Star,
+        QStringLiteral("默认方案"),
+        QStringLiteral("使用 previously_selected_schema 约定作为新用户首次启动的默认输入方案"),
+        defaultBox, QColor(135, 100, 184), container));
+
+    // Card 5: Open Schema Directory
+    auto* btnOpenSchemaDir = new fluent::basicinput::Button(QStringLiteral("打开方案目录"));
+    btnOpenSchemaDir->setFluentStyle(fluent::basicinput::Button::Standard);
+    connect(btnOpenSchemaDir, &fluent::basicinput::Button::clicked, this, []() {
+        QString userRimeDir = WeaselPaths::userDataDir();
+        QString sharedDir = WeaselPaths::sharedDataDir();
+        // Prefer user dir if available, else shared
+        QDesktopServices::openUrl(QUrl::fromLocalFile(
+            !userRimeDir.isEmpty() ? userRimeDir : sharedDir));
+    });
+
+    layout->addWidget(new SettingsCard(
+        Typography::Icons::Folder,
+        QStringLiteral("方案目录"),
+        QStringLiteral("直接访问用户 Rime 数据目录中的 *.schema.yaml 配置文件"),
+        btnOpenSchemaDir, QColor(0, 164, 239), container));
+
+    refreshSchemaList();
+
+    layout->addStretch(1);
+    scroll->setWidget(container);
+    return scroll;
+}
+
+void SettingsWindow::importSchemasFromDirectory(const QString& dirPath) {
+    QStringList yamlFiles = QDir(dirPath).entryList(QStringList() << "*.schema.yaml",
+                                                     QDir::Files | QDir::Readable);
+    int imported = 0;
+    for (const QString& file : yamlFiles) {
+        const QString src = QDir(dirPath).absoluteFilePath(file);
+        const QString dest = QDir(WeaselPaths::userDataDir()).absoluteFilePath(file);
+        if (QFile::copy(src, dest)) {
+            ++imported;
+        }
+    }
+    if (imported > 0) {
+        refreshSchemaList();
+        QMessageBox::information(this, QStringLiteral("导入完成"),
+                                 QString::number(imported) + QStringLiteral(" 个方案已导入。"));
+    }
 }
 
 // ----------------------------------------------------------------------------

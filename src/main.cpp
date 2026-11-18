@@ -1452,7 +1452,12 @@ int main(int argc, char* argv[]) {
     // 状态由服务端线程推过来（WeaselEngine 内部已做跨线程投递）。
     FluentUiAdapter adapter(&candWin);
     QObject::connect(&engine, &UiEngine::stateChanged, &app, [&]() {
-        adapter.apply(engine.context(), engine.status());
+        auto ib = engine.lastInputBox();
+        QRectF inputBox;
+        if (ib.valid) {
+            inputBox = QRectF(ib.rect);
+        }
+        adapter.apply(engine.context(), engine.status(), inputBox);
     });
 
     // Completely decoupled via separate process invocation:

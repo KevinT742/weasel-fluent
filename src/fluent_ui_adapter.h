@@ -7,6 +7,8 @@
 
 class CandidateWindow;
 
+class CandidateWindow;
+
 /// 把官方 Weasel 的组合态映射为本仓的候选窗状态。
 ///
 /// 映射关系（设计文档 §4.3）：
@@ -31,10 +33,12 @@ public:
     explicit FluentUiAdapter(CandidateWindow* window) : m_window(window) {}
 
     /// 把上游 Context/Status 映射为 RimeUiState 并推给候选窗。
-    void apply(const weasel::Context& ctx, const weasel::Status& status);
+    void apply(const weasel::Context& ctx, const weasel::Status& status,
+               const QRectF& inputBox);
 
     /// 纯函数形式，便于单元测试。
-    static RimeUiState toUiState(const weasel::Context& ctx, const weasel::Status& status);
+    static RimeUiState toUiState(const weasel::Context& ctx, const weasel::Status& status,
+                                 const QRectF& inputBox = QRectF());
 
 private:
     CandidateWindow* m_window = nullptr;

@@ -4,6 +4,7 @@
 #include <Windows.h>
 #include <resource.h>
 #include <WeaselUtility.h>
+#include <shellapi.h>
 
 namespace weasel {
 class PipeServer : public PipeChannel<DWORD, PipeMessage> {
@@ -307,13 +308,43 @@ DWORD ServerImpl::OnUpdateInputPosition(WEASEL_IPC_COMMAND uMsg,
 
   {
     using PPTLPFPMDPI = BOOL(WINAPI*)(HWND, LPPOINT);
-    PPTLPFPMDPI PhysicalToLogicalPointForPerMonitorDPI =
+    auto PhysicalToLogicalPointForPerMonitorDPI =
         (PPTLPFPMDPI)::GetProcAddress(m_hUser32Module,
                                       "PhysicalToLogicalPointForPerMonitorDPI");
     POINT lt = {rc.left, rc.top};
     POINT rb = {rc.right, rc.bottom};
-    PhysicalToLogicalPointForPerMonitorDPI(NULL, &lt);
-    PhysicalToLogicalPointForPerMonitorDPI(NULL, &rb);
+    // [weasel-fluent] Convert physical → logical per-monitor (works across
+    // processes).  Falls back gracefully if APIs are missing.
+    {
+      HMONITOR hMonL = MonitorFromPoint(lt, MONITOR_DEFAULTTONEAREST);
+      HMONITOR hMonR = MonitorFromPoint(rb, MONITOR_DEFAULTTONEAREST);
+      typedef BOOL(WINAPI * PDPI)(HMONITOR, UINT *, UINT *);
+      HMODULE hShcore = LoadLibraryW(L"shcore.dll");
+      PDPI pfDpi = hShcore ? (PDPI)GetProcAddress(hShcore, "GetDpiForMonitor")
+                           : nullptr;
+      if (pfDpi && hMonL) {
+        UINT dx = 0, dy = 0;
+        if (pfDpi(hMonL, &dx, &dy) == S_OK && dx != 0) {
+          lt.x = ((LONG)lt.x * 96) / dx;
+          lt.y = ((LONG)lt.y * 96) / dx;
+        }
+      }
+      if (pfDpi && hMonR) {
+        UINT dx = 0, dy = 0;
+        if (pfDpi(hMonR, &dx, &dy) == S_OK && dx != 0) {
+          rb.x = ((LONG)rb.x * 96) / dx;
+          rb.y = ((LONG)rb.y * 96) / dx;
+        }
+      }
+      if (hShcore)
+        FreeLibrary(hShcore);
+    }
+    if (PhysicalToLogicalPointForPerMonitorDPI) {
+      HWND hw = GetForegroundWindow();
+      HWND hw0 = hw ? hw : NULL;
+      PhysicalToLogicalPointForPerMonitorDPI(hw0, &lt);
+      PhysicalToLogicalPointForPerMonitorDPI(hw0, &rb);
+    }
     rc = {lt.x, lt.y, rb.x, rb.y};
   }
 

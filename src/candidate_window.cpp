@@ -549,6 +549,53 @@ void CandidateWindow::moveToPosition(const QPoint& pt) {
     move(x, y);
 }
 
+void CandidateWindow::setInputBoxRect(const QRectF& rc) {
+    if (!rc.isValid() || rc.isNull()) {
+        return;
+    }
+    // [weasel-fluent] Input box rect received — use it for follow positioning.
+    // The rect comes from TIP client (already DPI-logical) via WeaselEngine.
+    // Calculate candidate window position relative to input box based on orientation.
+    bool isVertical = (AppConfig::instance().orientation() == QStringLiteral("vertical"));
+
+    QScreen* screen = QGuiApplication::primaryScreen();
+    QRect avail = screen ? screen->availableGeometry() : QRect(0, 0, 1920, 1080);
+
+    int w = m_calculatedSize.width() > 0 ? m_calculatedSize.width() : width();
+    int h = m_calculatedSize.height() > 0 ? m_calculatedSize.height() : height();
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+
+    int x, y;
+    if (isVertical) {
+        // Vertical layout: symmetric across input box
+        x = static_cast<int>(rc.left() - w - 8.0);
+        y = static_cast<int>(rc.center().y() - h * 0.5);
+    } else {
+        // Horizontal layout: below input box, x-aligned to cursor
+        x = static_cast<int>(rc.left());
+        y = static_cast<int>(rc.bottom()) + 2;
+    }
+
+    // Overflow check: flip to opposite side if needed
+    if (y + h > avail.bottom() - 4) {
+        if (isVertical) {
+            // For vertical, try other side
+            x = static_cast<int>(rc.right()) + 8;
+        } else {
+            // Above input box
+            y = static_cast<int>(rc.top()) - h - 2;
+        }
+    }
+
+    // Clamp coordinates to screen boundaries with padding
+    x = qBound(avail.left() + 4, x, avail.right() - w - 4);
+    y = qBound(avail.top() + 4, y, avail.bottom() - h - 4);
+
+    move(x, y);
+}
+
 void CandidateWindow::calculateLayout() {
     auto& cfg = AppConfig::instance();
     bool isVertical = (cfg.orientation() == QStringLiteral("vertical"));

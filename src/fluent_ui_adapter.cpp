@@ -2,7 +2,8 @@
 
 #include "candidate_window.h"
 
-RimeUiState FluentUiAdapter::toUiState(const weasel::Context& ctx, const weasel::Status& status) {
+RimeUiState FluentUiAdapter::toUiState(const weasel::Context& ctx, const weasel::Status& status,
+                                       const QRectF& inputBox) {
     RimeUiState st;
     st.isComposing = !ctx.preedit.str.empty();
     st.preedit = QString::fromStdWString(ctx.preedit.str);
@@ -21,6 +22,7 @@ RimeUiState FluentUiAdapter::toUiState(const weasel::Context& ctx, const weasel:
     st.isLastPage = ctx.cinfo.is_last_page;
     st.asciiMode = status.ascii_mode;
     st.fullShape = status.full_shape;
+    st.inputBoxRect = inputBox;
 
     // 上游的 candies/comments/labels 都是 std::vector<weasel::Text>，
     // 文本要取 Text::str 而不是直接当 wstring 用。
@@ -38,9 +40,12 @@ RimeUiState FluentUiAdapter::toUiState(const weasel::Context& ctx, const weasel:
     return st;
 }
 
-void FluentUiAdapter::apply(const weasel::Context& ctx, const weasel::Status& status) {
+void FluentUiAdapter::apply(const weasel::Context& ctx, const weasel::Status& status,
+                            const QRectF& inputBox) {
     if (!m_window) {
         return;
     }
     m_window->updateFromWeasel(ctx, status);
+    // Pass input box rect for follow behavior.
+    m_window->setInputBoxRect(inputBox);
 }
