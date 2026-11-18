@@ -9,6 +9,10 @@
 #include <WeaselIPC.h>
 #include <WeaselIPCData.h>
 #include <RimeWithWeasel.h>
+// RimeWithWeasel.h 间接引入了 librime 的 rime_api.h，而它把 Bool/True/False
+// 定义成了宏 —— 与 Qt 的 QVariant::Type::Bool 正面相撞。立刻清掉。
+// 详见 librime_compat.h 里的完整说明。
+#include "librime_compat.h"
 
 #include <atomic>
 #include <deque>
@@ -87,6 +91,9 @@ public:
     bool isRunning() const { return m_running.load(); }
 
 public:
+    /// 注册语言栏（输入法工具栏）的菜单命令。
+    void registerLanguageBarCommands();
+
     /// 在服务端线程把排队的命令执行掉。
     /// 公开是因为命令窗口的窗口过程要调用它。
     void executePendingCommands();

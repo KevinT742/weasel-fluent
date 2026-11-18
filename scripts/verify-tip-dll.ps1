@@ -127,6 +127,103 @@ if (-not (Test-Path $ourRegister)) {
     }
 }
 
+# ── 4. 语言栏（输入法工具栏）资源 ─────────────────────────────────────────
+#
+# 为什么必须查：语言栏的图标和右键菜单是**运行时从 DLL 的资源段里加载**的
+# （LanguageBar.cpp：LoadMenuW(g_hInst, MAKEINTRESOURCE(IDR_MENU_POPUP*)) /
+# LoadImageW(g_hInst, MAKEINTRESOURCEW(IDI_ZH))）。
+# 资源没编进去 ⇒ 编译链接全都正常，但语言栏右键菜单是空的、图标不显示 ——
+# 属于「构建通过、功能却是坏的」这类最难发现的回归。
+#
+# ⚠️ 图标必须查 **RT_GROUP_ICON(14)** 而不是 RT_ICON(3)：
+#    上游的 .ico 是多分辨率的（每张 6 幅：16/24/32/48 等），rc.exe 遇到多幅
+#    .ico 会生成「RT_GROUP_ICON(14) + 若干张 RT_ICON(3) 图片资源」，
+#    而 **IDI_ZH 之类的 ID 落在 GROUP_ICON 上**，图片资源的 ID 是自动编的 1..N。
+#    查 RT_ICON(3) 永远查不到 ⇒ 会误报「图标缺失」。
+#
+# 资源 ID 取自 vendor 的 include/resource.h：
+#   RT_MENU(4)：105 IDR_MENU_POPUP / 108 HANT / 109 HANS
+#   RT_GROUP_ICON(14)：100 WEASEL / 101 EN / 102 ZH / 103 RELOAD / 106 FULL_SHAPE / 107 HALF_SHAPE
+$menuIds = @(105, 108, 109)
+$iconIds = @(100, 101, 102, 103, 106, 107)
+
+if (-not ("WeaselTipResourceProbe" -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public static class WeaselTipResourceProbe {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr LoadLibraryExW(string lpFileName, IntPtr hFile, uint dwFlags);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr FindResourceW(IntPtr hModule, IntPtr lpName, IntPtr lpType);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FreeLibrary(IntPtr hModule);
+
+    // LOAD_LIBRARY_AS_DATAFILE：只把资源段当数据读，**不执行 DllMain**。
+    private const uint LOAD_LIBRARY_AS_DATAFILE = 0x2;
+    private const int RT_ICON = 3;
+    private const int RT_MENU = 4;
+    private const int RT_GROUP_ICON = 14;
+
+    // 返回的 key 形如 "RT_MENU:105"，value 表示该资源是否存在。
+    public static Dictionary<string, bool> Probe(string path, int[] menuIds, int[] iconIds) {
+        var result = new Dictionary<string, bool>();
+        IntPtr h = LoadLibraryExW(path, IntPtr.Zero, LOAD_LIBRARY_AS_DATAFILE);
+        if (h == IntPtr.Zero) {
+            result["__loaded__"] = false;
+            return result;
+        }
+        result["__loaded__"] = true;
+        foreach (int id in menuIds) {
+            result["RT_MENU:" + id] = FindResourceW(h, new IntPtr(id), new IntPtr(RT_MENU)) != IntPtr.Zero;
+        }
+        foreach (int id in iconIds) {
+            result["RT_GROUP_ICON:" + id] = FindResourceW(h, new IntPtr(id), new IntPtr(RT_GROUP_ICON)) != IntPtr.Zero;
+        }
+        // 至少要有一张实际的 RT_ICON 图片数据（group icon 指向的那些）。
+        result["RT_ICON:*"] = FindResourceW(h, new IntPtr(1), new IntPtr(RT_ICON)) != IntPtr.Zero;
+        FreeLibrary(h);
+        return result;
+    }
+}
+"@
+}
+
+$probe = [WeaselTipResourceProbe]::Probe($dll, $menuIds, $iconIds)
+if (-not $probe.ContainsKey("__loaded__") -or -not $probe["__loaded__"]) {
+    $problems += "TIP DLL could not be opened as a data file (resource probe failed)"
+    Write-Host "FAIL: cannot open the TIP DLL for resource enumeration" -ForegroundColor Red
+} else {
+    $missing = @()
+    foreach ($key in ($probe.Keys | Sort-Object)) {
+        if ($key -eq "__loaded__") { continue }
+        if ($probe[$key]) {
+            Write-Host ("    OK  resource {0}" -f $key) -ForegroundColor DarkGray
+        } else {
+            $missing += $key
+        }
+    }
+    if ($missing.Count -gt 0) {
+        $problems += ("missing language bar resources: " + ($missing -join ", "))
+        Write-Host ("FAIL: missing language bar resources: " + ($missing -join ", ")) -ForegroundColor Red
+    } else {
+        Write-Host "PASS: language bar menus and icons are present in the TIP DLL" -ForegroundColor Green
+    }
+}
+
+# 图标源文件也必须在仓库里（.rc 里引的是相对路径 ../../3rdparty/weasel/resource/*）。
+$resourceDir = Join-Path $RepoRoot "3rdparty\weasel\resource"
+foreach ($icon in @("weasel.ico", "en.ico", "zh.ico", "reload.ico", "full.ico", "half.ico")) {
+    if (-not (Test-Path (Join-Path $resourceDir $icon))) {
+        $problems += "missing icon source: 3rdparty/weasel/resource/$icon"
+        Write-Host "FAIL: missing icon source $icon" -ForegroundColor Red
+    }
+}
+
 Write-Host ""
 if ($problems.Count -eq 0) {
     Write-Host "TIP DLL verification passed" -ForegroundColor Green

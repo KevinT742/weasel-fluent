@@ -412,6 +412,17 @@ target("weasel-fluent-tsf")
     add_links("boost_thread", "boost_serialization", "boost_system", "boost_atomic")
     add_files("tip/*.cpp")
     add_files("tip/weasel-fluent-tsf.def")
+    -- 语言栏（输入法工具栏）的资源：菜单 + 中/英/全半角图标。
+    -- 没有它，LoadMenuW / LoadImageW 全部失败 ⇒ 工具栏右键菜单是空的、图标也不出来。
+    -- ⚠️ 资源必须编进 **DLL**（静态库里的 .rc 不会被链接器带上）。
+    -- .rc 里 #include "afxres.h" ⇒ 需要 ATL/MFC 头文件目录。
+    if is_plat("windows") then
+        local atl_inc = find_atl()
+        if atl_inc then
+            add_includedirs(atl_inc)
+        end
+        add_files("tip/weasel-tsf.rc")
+    end
 
     after_build(function (target)
         local targetfile = target:targetfile()

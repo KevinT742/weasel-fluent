@@ -1,16 +1,33 @@
 #include "weasel_engine.h"
 
+#include <QApplication>
 #include <QDebug>
+#include <QProcess>
 #include <QMetaObject>
 
 #include <rime_api.h>
+// rime_api.h 自带 include guard，此时已是空操作；带上 compat 头是为了让
+// 「宏泄漏」这件事在任何包含顺序下都能被立刻发现，而不是让 Qt 头莫名其妙地解析失败。
+#include "librime_compat.h"
+
+// 编译期探针：librime 的 Bool/True/False 宏绝不能活到 Qt 头解析之后。
+// 若哪天被重新引入，Qt 的 QVariant::Type::Bool 会被改写成 `int = QMetaType::int`，
+// MSVC 会在 qvariant.h:146 报 C2144/C2589 —— 报错位置离病因极远，极难排查。
+// 这个探针把错误拉回到真正的源头。
+#if defined(Bool) || defined(True) || defined(False)
+#error "librime 的 Bool/True/False 宏泄漏了 —— 检查 src/librime_compat.h 的包含位置"
+#endif
 
 #include <windows.h>
 
 #include <atomic>
 #include <vector>
 
+#include <WeaselUtility.h>
+#include <resource.h>
+
 #include "fluent_ui_adapter.h"
+#include "paths.h"
 #include "schema_manager.h"
 
 namespace {
@@ -88,6 +105,7 @@ bool WeaselEngine::start(QString* error) {
         executePendingCommands();
         return true;
     });
+    registerLanguageBarCommands();
 
     // 服务端整体跑在独立线程上：建窗口、初始化引擎、跑消息循环必须在同一个
     // 线程（上游 weasel::Server::Start() 在调用线程创建窗口，Run() 是该线程的
@@ -161,10 +179,110 @@ bool WeaselEngine::start(QString* error) {
     return true;
 }
 
-void WeaselEngine::stop() {
-    if (!m_running.exchange(false)) {
+void WeaselEngine::registerLanguageBarCommands() {
+    if (!m_server) {
         return;
     }
+
+    // ── 语言栏（输入法工具栏）的菜单命令 ──────────────────────────────────
+    //
+    // 上游是由 WeaselServer 注册这些命令的（WeaselServerApp::SetupMenuHandlers）：
+    // 语言栏里点一下，TIP 就用 TrayCommand 消息发给服务端，由服务端的
+    // m_MenuHandlers 回调处理。我们取代了 WeaselServer，所以**必须自己注册**，
+    // 否则语言栏的「部署 / 设置 / 退出…」点了没反应。
+    //
+    // ⚠️ 线程模型：这些回调跑在**管道的 worker 线程**上，**不是**服务端的消息线程。
+    // 上游 WeaselServerImpl.cpp：PipeServer::Listen 每接一个连接就 boost::thread
+    // 起一个 _ProcessPipeThread，消息走 HandlePipeMessage → OnCommand →
+    // m_MenuHandlers[uID]()，全程都在那个 worker 线程上（上游还专门为托盘刷新
+    // 加了一次「投回服务端消息线程」的跳转，见 SetTrayRefreshCallback）。
+    // 所以这里的规矩是：
+    //   * 纯 Win32 调用（ShellExecuteW）可以直接做；
+    //   * 碰 Qt 的（QProcess / qApp）必须用 QueuedConnection 投回 Qt 线程；
+    //   * WeaselEngine::deploy() 走 postCommand()（互斥量 + PostMessage），跨线程安全。
+
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QString userRimeDir = WeaselPaths::userDataDir();
+
+    // 退出服务（Qt 主线程退出 ⇒ 服务进程结束）。
+    m_server->AddMenuHandler(ID_WEASELTRAY_QUIT, [this]() {
+        QMetaObject::invokeMethod(qApp, &QCoreApplication::quit, Qt::QueuedConnection);
+        return true;
+    });
+
+    // 重新部署。注意：本地变量不能也叫 deploy —— 那会把成员函数 WeaselEngine::deploy()
+    // 遮住，lambda 里 `deploy()` 就成了「在自己的初始值设定项中引用自己」。
+    // deploy() 内部是 postCommand()（互斥量 + PostMessage），跨线程安全。
+    const auto redeploy = [this]() {
+        this->deploy();
+        return true;
+    };
+    m_server->AddMenuHandler(ID_WEASELTRAY_DEPLOY, redeploy);
+    m_server->AddMenuHandler(ID_WEASELTRAY_SYNC, redeploy);
+
+    // 打开设置中心（独立进程）。
+    // QProcess 是 Qt 类，必须投回 Qt 线程再用（见上面的线程模型说明）。
+    const auto openSettings = [appDir]() {
+        QMetaObject::invokeMethod(
+            qApp,
+            [appDir]() {
+                QProcess::startDetached(
+                    appDir + QStringLiteral("\\weasel-fluent-cpp-qt.exe"),
+                    QStringList() << QStringLiteral("--settings"));
+            },
+            Qt::QueuedConnection);
+        return true;
+    };
+    m_server->AddMenuHandler(ID_WEASELTRAY_SETTINGS, openSettings);
+    m_server->AddMenuHandler(ID_WEASELTRAY_DICT_MANAGEMENT, openSettings);
+
+    // 打开目录 / 网址。
+    // ShellExecuteW 是 W 版，必须传宽串；QString::utf16() 返回的指针在本次调用
+    // 期间有效（QString 还活着），ShellExecuteW 内部会复制走。
+    const auto openPath = [](const QString& path) {
+        if (!path.isEmpty()) {
+            ::ShellExecuteW(nullptr, L"open", reinterpret_cast<LPCWSTR>(path.utf16()),
+                            nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        return true;
+    };
+    m_server->AddMenuHandler(ID_WEASELTRAY_USERCONFIG, [openPath, userRimeDir]() {
+        return openPath(userRimeDir);
+    });
+    m_server->AddMenuHandler(ID_WEASELTRAY_INSTALLDIR, [openPath, appDir]() {
+        return openPath(appDir);
+    });
+    m_server->AddMenuHandler(ID_WEASELTRAY_LOGDIR, [openPath]() {
+        return openPath(QString::fromStdWString(WeaselLogPath().wstring()));
+    });
+    m_server->AddMenuHandler(ID_WEASELTRAY_WIKI, [openPath]() {
+        return openPath(QStringLiteral("https://rime.im/docs/"));
+    });
+    m_server->AddMenuHandler(ID_WEASELTRAY_FORUM, [openPath]() {
+        return openPath(QStringLiteral("https://rime.im/discuss/"));
+    });
+    m_server->AddMenuHandler(ID_WEASELTRAY_HOMEPAGE, [openPath]() {
+        return openPath(QStringLiteral("https://rime.im/"));
+    });
+    m_server->AddMenuHandler(ID_WEASELTRAY_CHECKUPDATE, [openPath]() {
+        return openPath(QStringLiteral("https://github.com/KevinT742/weasel-fluent/releases"));
+    });
+
+    // 重启服务：拉起 start_service.bat。
+    //
+    // TIP 侧其实**本地**处理这一条（见 vendor 的 LanguageBar.cpp）：
+    // 它读注册表里的 WeaselRoot 再拼 "start_service.bat"。所以这一条注册在
+    // 服务端是兜底路径 —— 万一命令被转发到了服务端，也不会变成哑巴。
+    // start_service.bat 由 package_dist.ps1 生成并随安装包分发。
+    m_server->AddMenuHandler(ID_WEASELTRAY_RERUN_SERVICE, [appDir]() {
+        const QString bat = appDir + QStringLiteral("\\start_service.bat");
+        ::ShellExecuteW(nullptr, L"open", reinterpret_cast<LPCWSTR>(bat.utf16()),
+                        nullptr, nullptr, SW_HIDE);
+        return true;
+    });
+}
+
+void WeaselEngine::stop() {
 
     if (serverHwnd()) {
         // 正常模式：让上游的消息循环退出。

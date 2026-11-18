@@ -17,7 +17,14 @@ function Invoke-Check {
     Write-Host ""
     Write-Host "=== $Name ===" -ForegroundColor Cyan
     & $Action
-    if ($LASTEXITCODE -ne 0) {
+    $code = $LASTEXITCODE
+    # 退出码 2 = 跳过（例如语言栏 IPC 测试需要服务在跑）。
+    # 跳过不算失败，但也绝不能当成通过。
+    if ($code -eq 2) {
+        Write-Host "--- $Name SKIPPED ---" -ForegroundColor Yellow
+        return
+    }
+    if ($code -ne 0) {
         $script:failed += $Name
         Write-Host "--- $Name FAILED ---" -ForegroundColor Red
     }
@@ -37,6 +44,11 @@ Invoke-Check 'license' {
 
 Invoke-Check 'tip-dll' {
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\verify-tip-dll.ps1')
+}
+
+# 语言栏 ↔ 服务端的端到端连通性（需要服务在跑，没跑就跳过）。
+Invoke-Check 'langbar-ipc' {
+    powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\test_langbar_ipc.ps1')
 }
 
 # The test suite needs the built executable and the Qt runtime on PATH.

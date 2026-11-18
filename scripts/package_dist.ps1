@@ -145,6 +145,27 @@ start "" "%~dp0weasel-fluent-cpp-qt.exe" --settings
 "@
 $SettingsScript | Out-File -FilePath "$DistDir\settings.bat" -Encoding utf8
 
+# start_service.bat：**上游 TIP 硬依赖这个文件名**。
+#
+# 上游 Weasel 的 WeaselTSF 在两处按 "<WeaselRoot>\start_service.bat" 拉服务：
+#   * WeaselTSF.cpp：连不上服务端时自动拉起（这是「开机后输入法能用」的关键路径）；
+#   * LanguageBar.cpp：语言栏菜单里的「重启(Restart)」。
+# 而 WeaselRoot 由本仓的安装器写在 HKCU\Software\Rime\Weasel\WeaselRoot
+# （vendor 补丁 0002 已把查找顺序改成 HKCU 优先）。
+#
+# 所以本仓**必须**提供同名同义的脚本，否则 TIP 的自动拉起会静默失败
+# （ShellExecuteW 找不到文件不报错，只是服务始终起不来）。
+# 上游这个脚本启动的是 WeaselServer.exe；我们的宿主进程本身就同时是
+# GUI 与服务端，所以直接启动 weasel-fluent-cpp-qt.exe 即可。
+# 单实例由 WeaselFluentSingleInstanceMutex 兜底，重复拉起不会有副作用。
+$StartServiceScript = @"
+@echo off
+chcp 65001 >nul
+title Weasel-Fluent - 启动输入法服务
+start "" "%~dp0weasel-fluent-cpp-qt.exe"
+"@
+$StartServiceScript | Out-File -FilePath "$DistDir\start_service.bat" -Encoding utf8
+
 # 安装器 / 卸载器：随包分发，每用户免提权安装。
 foreach ($tool in @("install.ps1", "uninstall.ps1")) {
     $toolSrc = Join-Path $ProjectDir "scripts\$tool"
@@ -155,7 +176,7 @@ foreach ($tool in @("install.ps1", "uninstall.ps1")) {
     }
 }
 
-Write-Host "[7/7] Generated control scripts (install_and_run.bat, stop.bat, settings.bat, install.ps1, uninstall.ps1)" -ForegroundColor Green
+Write-Host "[7/7] Generated control scripts (install_and_run.bat, stop.bat, settings.bat, start_service.bat, install.ps1, uninstall.ps1)" -ForegroundColor Green
 
 # 9. Compress to zip
 $ZipDst = "$DistBase\weasel-fluent-v1.0.0-windows-x64.zip"

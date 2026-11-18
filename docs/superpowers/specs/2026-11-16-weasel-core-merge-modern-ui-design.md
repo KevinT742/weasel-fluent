@@ -411,6 +411,7 @@ Fluent Qt 实现**，因此：
 | 2.6 | `scripts/install.ps1` / `uninstall.ps1`（§6.6） | 在装有官方 Weasel 的机器上一键替换成功（HKCU CLSID 影子注册，免提权） |
 | 2.7 | 设置中心「自定义皮肤」补 Weasel style 栏（§6.4 双轨边界） | 两套皮肤的作用域在界面上可辨识 |
 | 2.8 | `package_dist.ps1` 产出完整发行包 | 换机可跑 |
+| 2.9 | **语言栏（输入法工具栏）直接连通我们的程序**：TIP 的图标/菜单资源编进 TIP DLL；服务端注册 `ID_WEASELTRAY_*` 处理器；TIP 本地那半边靠 HKCU `WeaselRoot` 找到我们的安装目录 | 资源枚举断言菜单+图标都在；经命名管道发 `WEASEL_IPC_TRAY_COMMAND` 能命中我们的处理器（详见 Round 2 计划 T11 执行记录） |
 
 **Round 2 的关键路径**是 2.2 → 2.3 → 2.4 → 2.5，顺序不可颠倒：
 先让官方 TSF 的数据流跑通，再替换候选窗后端，再切换服务端，最后才能删掉过渡实现。

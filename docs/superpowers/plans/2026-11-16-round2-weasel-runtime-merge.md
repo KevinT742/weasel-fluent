@@ -255,6 +255,93 @@ T1 执行中撞到三条与计划假设不符的事实，已回写：
 
 ⇒ 设计文档 §7 的 2.1–2.8 至此**全部落地**。
 
+### T11 执行记录（2026-11-18，已完成）—— 语言栏（输入法工具栏）直接连通我们的程序
+
+用户需求：「输入法工具栏部分要能够直接与我们的程序连通起来」。
+
+**先把「语言栏是什么」搞清楚（这一步决定了后面所有做法）**：
+语言栏**不是一个独立的窗口**，而是 **TIP 的一部分**（`3rdparty/weasel/WeaselTSF/LanguageBar.cpp`）。
+它的三块内容分别落在三个地方：
+
+| 块 | 在哪 | 本仓要做的事 |
+| :--- | :--- | :--- |
+| 图标（中/英/全角/半角/重载）与右键菜单 | **TIP DLL 的资源段**，运行时 `LoadMenuW` / `LoadImageW` | 把资源编进 `weasel-fluent-tsf.dll`（**不编就没有**：菜单是空的、图标不显示，而编译链接全绿） |
+| 菜单项被点中后要做的 | 一半 TIP 本地做，一半**转发给服务端** | 服务端注册对应的 `ID_WEASELTRAY_*` 处理器（上游是 WeaselServer 注册的，我们取代了它 ⇒ **必须自己注册**） |
+| TIP 本地那部分 | TIP 读注册表的 `WeaselRoot` 拼路径 | 补丁 0002 已把查找改成 **HKCU 优先**（每用户安装写的就是 HKCU）⇒ 无需新补丁 |
+
+**转发那条路的完整链路**（就是「工具栏连到我们的程序」的关键路径）：
+
+```
+TIP: _HandleLangBarMenuSelect(wID)
+       ├─ 本地：RERUN_SERVICE / INSTALLDIR / USERCONFIG / LOGDIR / WIKI / FORUM
+       └─ default: m_client.TrayCommand(wID)
+            → PipeMessage{ WEASEL_IPC_TRAY_COMMAND, wParam = menuId }
+            → 命名管道 \\.\pipe\<用户>\WeaselFluentNamedPipe
+            → ServerImpl::OnCommand() → m_MenuHandlers[menuId]()
+            → **我们的 WeaselEngine::registerLanguageBarCommands() 注册的回调**
+```
+
+**改动清单**：
+
+| 项 | 内容 |
+| :--- | :--- |
+| 新增 `3rdparty/weasel/resource/*.ico` | vendor 上游的 6 张图标（weasel/en/zh/reload/full/half） |
+| 新增 `tip/weasel-tsf.rc` | 自写资源脚本（**不 vendor 上游 `.rc`**：它 `#include "afxres.h"`，本机没装 MFC）。改为 rc 内建的 `1 VERSIONINFO`，`LANGUAGE 0x4,0x2` 数值写法；UTF-16LE + BOM |
+| `xmake.lua` | TIP 目标 `add_files("tip/weasel-tsf.rc")`（⚠️ 静态库里的 `.rc` 不会被链接器带上，必须编进 **DLL**） |
+| `src/weasel_engine.cpp` | 新增 `registerLanguageBarCommands()`：注册 `QUIT / DEPLOY / SYNC / SETTINGS / DICT_MANAGEMENT / USERCONFIG / INSTALLDIR / LOGDIR / WIKI / FORUM / HOMEPAGE / CHECKUPDATE / RERUN_SERVICE` |
+| `scripts/package_dist.ps1` | 产出 `start_service.bat`（上游 TIP 在两处按 `<WeaselRoot>\start_service.bat` 拉服务；发行包**必须**带同名文件，否则 TIP 的自动拉起静默失败） |
+| `scripts/verify-tip-dll.ps1` | 新增第 4 组检查：枚举 DLL 资源段，断言三个菜单 + 六个图标都在 |
+| 新增 `scripts/test_langbar_ipc.ps1` | **端到端**：连管道发 `WEASEL_IPC_TRAY_COMMAND`，断言回包 `1`（命中我们的处理器）而未注册 ID 回包 `0` |
+| `scripts/run-selfchecks.ps1` | 接入 `langbar-ipc` 检查（服务没在跑 ⇒ 跳过，退出码 2） |
+
+**实测推翻的假设（必须回写）**：
+
+1. ❌「是 `<resource.h>` 与 Qt 头冲突」 → **真因是 librime 的 `Bool` 宏**。`deps/rime/dist/include/rime_api.h:45` 有
+   `#define Bool int`，而 Qt 的 `QVariant::Type` 枚举里有一个成员正好叫 `Bool` ⇒ 被展开成
+   `int = QMetaType::int` ⇒ MSVC 在 `qvariant.h:146` 报 C2144/C2589（报错位置离病因极远）。
+   `weasel_engine.h` → `RimeWithWeasel.h` → `rime_api.h` 先定义宏，随后 `#include <QApplication>` 才解析 Qt 头 ⇒ 炸。
+   之前不炸是因为**这个文件从没解析过 `qvariant.h`**（含头顺序一换就炸 ⇒ 典型的顺序依赖地雷）。
+   修法：新增 `src/librime_compat.h`，在引入 `rime_api.h` 之后立刻 `#undef Bool/False/True`；
+   vendor 自己的 `.cpp` 直接 include `rime_api.h`、不经过本文件 ⇒ 行为不变。另在 `weasel_engine.cpp` 里留
+   `#if defined(Bool) || ... → #error` 的编译期探针，把这类问题拉回真正的源头。
+2. ❌「菜单回调跑在服务端线程上」 → **真身是管道的 worker 线程**。`PipeServer::Listen` 每接一个连接就
+   `boost::thread` 起一个 `_ProcessPipeThread`，`HandlePipeMessage → OnCommand → m_MenuHandlers[uID]()`
+   全程在那个线程上（上游专门为托盘刷新加过一次「投回服务端消息线程」的跳转，可见常态不是）。
+   ⇒ 纯 Win32 调用（`ShellExecuteW`）可直接做；碰 Qt 的（`QProcess`）必须 `QueuedConnection` 投回 Qt 线程。
+3. ❌「图标是 `RT_ICON`」 → **真身是 `RT_GROUP_ICON(14)`**。上游的 `.ico` 是多分辨率的，rc.exe 会生成
+   「`RT_GROUP_ICON` + 若干张 `RT_ICON`」，而 `IDI_ZH` 之类的 ID 落在 **GROUP_ICON** 上，图片的 ID 是自动编的 1..N。
+   查 `RT_ICON(3)` 永远查不到 ⇒ 自检会误报「图标缺失」。
+4. ❌「上游 `.rc` 的 `..\resource\` 可以照抄」 → 那是上游的目录布局（`<repo>/resource/`）。我们的图标在
+   `3rdparty/weasel/resource/`、`.rc` 在 `tip/` ⇒ 路径要写成 `..\3rdparty\weasel\resource\`。
+5. ❌「TIP 侧还需要一个读 HKLM 的补丁 0008」 → **不需要**：补丁 0002 已经把 `_GetRootDir()` 与
+   `_HandleLangBarMenuSelect()` 里的 `WeaselRoot` 查找改成 HKCU 优先了。
+
+**端到端验收结果**：
+
+- ✅ TIP DLL 的 `.rsrc` 段 266 KB，三个菜单（105/108/109）与六个图标（100/101/102/103/106/107）**都在**
+  （用 `LoadLibraryEx(LOAD_LIBRARY_AS_DATAFILE)` + `FindResourceW` 实测枚举，不是看编译日志）；
+- ✅ 服务端注册了 13 条语言栏命令；`DEPLOY` 走 `postCommand()`（互斥量 + `PostMessage`，跨线程安全）；
+- ✅ 发行包与安装目录都带 `start_service.bat`（TIP 用 `WeaselRoot` 拼这个名字）；
+- ✅ **语言栏左键切中/英真的打到了我们的引擎**（`scripts/test_langbar_ipc.ps1`）：
+  开一个会话 → 基线 `status.ascii_mode=0` → 发 `ID_WEASELTRAY_ENABLE_ASCII`（40013）
+  → 再读引擎状态，`status.ascii_mode=1` → 发 `ID_WEASELTRAY_DISABLE_ASCII`（40014）→ 回到 `0`。
+  **不是只看「命令被接收了」，而是从引擎状态读回标志位**；
+- ✅ 未注册的菜单 ID 回包 `0`、注册的回包 `1`（判据本身有效，不是恒真）；
+- ✅ 自检 18 项 + tip-dll 4 组 + langbar-ipc 端到端全绿。
+
+**实测中又确定的两条协议细节**（写下来省得下次再逆向）：
+
+- 按键事件**没有额外的 body**：`KeyEvent` 是 4 字节的 `{keycode:16, mask:16}`，直接编码在
+  `PipeMessage.wParam` 里（服务端 `OnKeyEvent` 里 `KeyEvent(wParam)`）。只有 `START_SESSION`
+  额外带一段 UTF-16LE 的客户端信息（服务端 `AddSession` 要解析它）。
+- 回包是「4 字节 DWORD + 可选 UTF-16LE 文本 body」（body 里带 `status.ascii_mode=` 等）。
+  服务端是 `PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE`，所以客户端也必须用消息模式
+  （.NET 里 `ReadMode` 只能在 `Connect()` **之后**设）。
+
+**仍未做（需要真人在 GUI 里确认）**：Windows 11 的任务栏语言栏要勾选「使用桌面语言栏」才会显示
+桌面版语言栏（现代输入法指示器不走 TSF 的 `CLangBarItemButton`），这一步无法自动化，
+需要在装有本仓 TIP 的机器上人工点一次右键菜单确认。
+
 ---
 
 ## File Structure
