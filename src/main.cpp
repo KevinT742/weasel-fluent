@@ -39,6 +39,7 @@
 #include "ui_engine.h"
 #include "weasel_config_client.h"
 #include "weasel_engine.h"
+#include "weasel_style.h"
 #include <QElapsedTimer>
 #include <QSystemTrayIcon>
 #include <QMenu>
@@ -584,7 +585,7 @@ int runVerificationSuite() {
         const bool connected = cfg.ensureConnected(&err);
         if (connected) {
             // 服务在跑：样式能从响应流里读出来。
-            weasel::UIStyle style;
+            WeaselStyle style;
             QString styleError;
             if (!cfg.loadStyle(&style, &styleError)) {
                 std::cerr << "FAIL: could not read the Weasel style over IPC: "
@@ -592,7 +593,8 @@ int runVerificationSuite() {
                 return 1;
             }
             std::cout << "  -> PASS: Weasel style read over IPC (font_point="
-                      << style.font_point << ")\n";
+                      << style.fontPoint << " horizontal="
+                      << (style.horizontal ? 1 : 0) << ")\n";
         } else {
             // 服务没跑：必须干净地返回错误，不能卡住。
             if (err.isEmpty()) {
@@ -852,6 +854,48 @@ int runVerificationSuite() {
         }
         std::cout << "  -> PASS: the distribution ships the runtime, the Rime data and the"
                      " installer.\n";
+    }
+
+    // 18. Verify the Weasel style (weasel.yaml) read/write round-trip
+    std::cout << "[TEST 18] Testing the Weasel style round-trip...\n";
+    {
+        const QString yaml = QStringLiteral(
+            "# Rime Weasel style\n"
+            "# encoding: utf-8\n"
+            "\n"
+            "style:\n"
+            "  font_face: \"Microsoft YaHei UI\"\n"
+            "  font_point: 14\n"
+            "  horizontal: false\n"
+            "  inline_preedit: true\n"
+            "  custom_key: keep-me\n");
+        const WeaselStyle parsed = WeaselStyleManager::parse(yaml);
+        if (parsed.fontFace != QStringLiteral("Microsoft YaHei UI") || parsed.fontPoint != 14 ||
+            parsed.horizontal || !parsed.inlinePreedit) {
+            std::cerr << "FAIL: weasel.yaml parsing mismatch\n";
+            return 1;
+        }
+
+        WeaselStyle edited = parsed;
+        edited.fontFace = QStringLiteral("Segoe UI");
+        edited.fontPoint = 18;
+        edited.horizontal = true;
+        edited.inlinePreedit = false;
+        edited.markText = QStringLiteral("*");
+
+        const QString rewritten = WeaselStyleManager::rewrite(yaml, edited);
+        const WeaselStyle reparsed = WeaselStyleManager::parse(rewritten);
+        if (reparsed.fontFace != edited.fontFace || reparsed.fontPoint != edited.fontPoint ||
+            !reparsed.horizontal || reparsed.inlinePreedit ||
+            reparsed.markText != edited.markText) {
+            std::cerr << "FAIL: weasel.yaml rewriting mismatch\n";
+            return 1;
+        }
+        if (!rewritten.contains(QStringLiteral("keep-me"))) {
+            std::cerr << "FAIL: weasel.yaml rewriting dropped an unrelated key\n";
+            return 1;
+        }
+        std::cout << "  -> PASS: Weasel style round-trip keeps unrelated keys.\n";
     }
 
     std::cout << "====================================================\n";

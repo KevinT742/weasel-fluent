@@ -1346,9 +1346,152 @@ QWidget* SettingsWindow::createPersonalizationPage() {
         skinBox, QColor(171, 71, 188), container));
     layout->addWidget(m_lblSkinStatus);
 
+    // 10. Weasel 状态栏样式（内容层）
+    //
+    // 与上面的「自定义皮肤」（**框架层** / Fluent token 覆盖文件）是**两套作用域**，
+    // 设计文档 §6.4 要求在界面上能分辨：
+    //   * Fluent token → 改的是**我们**渲染候选窗用的配色 / 圆角 / 字体；
+    //   * weasel.yaml → 改的是 **Weasel 引擎侧**的样式键（字号、字体、横竖排、
+    //     行内预编辑……），服务端 `LoadWeaselUIStyle()` 读它之后重载生效。
+    m_comboWeaselFontFace = new fluent::basicinput::ComboBox();
+    m_comboWeaselFontFace->setFixedWidth(190);
+    m_comboWeaselFontFace->addItems({QStringLiteral("Microsoft YaHei UI"),
+                                     QStringLiteral("Microsoft YaHei"),
+                                     QStringLiteral("Segoe UI Variable Text"),
+                                     QStringLiteral("Segoe UI"),
+                                     QStringLiteral("SimSun"),
+                                     QStringLiteral("KaiTi")});
+
+    m_sliderWeaselFontPoint = new fluent::basicinput::Slider(Qt::Horizontal);
+    m_sliderWeaselFontPoint->setRange(9, 24);
+    m_sliderWeaselFontPoint->setValue(12);
+    m_sliderWeaselFontPoint->setFixedWidth(140);
+
+    m_lblWeaselFontPoint = new fluent::textfields::Label(QStringLiteral("12 pt"));
+    m_lblWeaselFontPoint->setFixedWidth(44);
+
+    m_comboWeaselLayout = new fluent::basicinput::ComboBox();
+    m_comboWeaselLayout->setFixedWidth(140);
+    m_comboWeaselLayout->addItem(QStringLiteral("横排"));
+    m_comboWeaselLayout->addItem(QStringLiteral("竖排"));
+
+    m_switchWeaselInlinePreedit = new fluent::basicinput::ToggleSwitch();
+    connect(m_sliderWeaselFontPoint, &fluent::basicinput::Slider::valueChanged,
+            this, [this](int v) {
+                m_lblWeaselFontPoint->setText(QString::number(v) + QStringLiteral(" pt"));
+            });
+
+    m_btnWeaselStyleRefresh = new fluent::basicinput::Button(QStringLiteral("从服务读取"));
+    m_btnWeaselStyleRefresh->setFluentStyle(fluent::basicinput::Button::Standard);
+    connect(m_btnWeaselStyleRefresh, &fluent::basicinput::Button::clicked, this, [this]() {
+        refreshWeaselStyle();
+    });
+
+    m_btnWeaselStyleApply = new fluent::basicinput::Button(QStringLiteral("应用并重新部署"));
+    m_btnWeaselStyleApply->setFluentStyle(fluent::basicinput::Button::Accent);
+    connect(m_btnWeaselStyleApply, &fluent::basicinput::Button::clicked, this, [this]() {
+        applyWeaselStyle();
+    });
+
+    auto* weaselStyleBox = new QWidget();
+    revealWindowMaterial(weaselStyleBox);
+    auto* weaselStyleLayout = new QHBoxLayout(weaselStyleBox);
+    weaselStyleLayout->setContentsMargins(0, 0, 0, 0);
+    weaselStyleLayout->setSpacing(12);
+    weaselStyleLayout->addWidget(m_comboWeaselFontFace);
+    weaselStyleLayout->addWidget(m_sliderWeaselFontPoint);
+    weaselStyleLayout->addWidget(m_lblWeaselFontPoint);
+    weaselStyleLayout->addWidget(m_comboWeaselLayout);
+    weaselStyleLayout->addWidget(m_switchWeaselInlinePreedit);
+    weaselStyleLayout->addWidget(m_btnWeaselStyleRefresh);
+    weaselStyleLayout->addWidget(m_btnWeaselStyleApply);
+
+    m_lblWeaselStyleStatus = new fluent::textfields::Label(QString());
+    m_lblWeaselStyleStatus->setFluentTypography(Typography::FontRole::Caption);
+    m_lblWeaselStyleStatus->setTextColorRole(fluent::textfields::Label::TextColorRole::Secondary);
+
+    layout->addWidget(new SettingsCard(
+        Typography::Icons::Edit,
+        QStringLiteral("Weasel 状态栏样式"),
+        QStringLiteral("引擎侧样式（weasel.yaml）：字体、字号、候选横竖排、行内预编辑 —— "
+                       "与上面的 Fluent token 皮肤是两套独立作用域"),
+        weaselStyleBox, QColor(0, 120, 212), container));
+    layout->addWidget(m_lblWeaselStyleStatus);
+
+    refreshWeaselStyle();
+
     layout->addStretch(1);
     scroll->setWidget(container);
     return scroll;
+}
+
+void SettingsWindow::refreshWeaselStyle() {
+    if (!m_config) {
+        if (m_lblWeaselStyleStatus) {
+            m_lblWeaselStyleStatus->setText(QStringLiteral("未连接 Weasel 服务"));
+        }
+        return;
+    }
+    WeaselStyle style;
+    QString error;
+    if (!m_config->loadStyle(&style, &error)) {
+        if (m_lblWeaselStyleStatus) {
+            m_lblWeaselStyleStatus->setText(error.isEmpty()
+                                               ? QStringLiteral("读取服务端样式失败")
+                                               : error);
+        }
+        return;
+    }
+    if (m_comboWeaselFontFace) {
+        const int idx = m_comboWeaselFontFace->findText(style.fontFace);
+        m_comboWeaselFontFace->setCurrentIndex(idx >= 0 ? idx : 0);
+    }
+    if (m_sliderWeaselFontPoint) {
+        m_sliderWeaselFontPoint->setValue(qBound(9, style.fontPoint, 24));
+    }
+    if (m_lblWeaselFontPoint) {
+        m_lblWeaselFontPoint->setText(QString::number(style.fontPoint) + QStringLiteral(" pt"));
+    }
+    if (m_comboWeaselLayout) {
+        m_comboWeaselLayout->setCurrentIndex(style.horizontal ? 0 : 1);
+    }
+    if (m_switchWeaselInlinePreedit) {
+        m_switchWeaselInlinePreedit->setIsOn(style.inlinePreedit);
+    }
+    if (m_lblWeaselStyleStatus) {
+        m_lblWeaselStyleStatus->setText(
+            QStringLiteral("服务端当前样式：字体 %1 · 字号 %2 pt · %3")
+                .arg(style.fontFace.isEmpty() ? QStringLiteral("（默认）") : style.fontFace)
+                .arg(style.fontPoint)
+                .arg(style.horizontal ? QStringLiteral("横排") : QStringLiteral("竖排")));
+    }
+}
+
+void SettingsWindow::applyWeaselStyle() {
+    if (!m_config) {
+        if (m_lblWeaselStyleStatus) {
+            m_lblWeaselStyleStatus->setText(QStringLiteral("未连接 Weasel 服务"));
+        }
+        return;
+    }
+    WeaselStyle style;
+    style.fontFace = m_comboWeaselFontFace ? m_comboWeaselFontFace->currentText() : QString();
+    style.fontPoint = m_sliderWeaselFontPoint ? m_sliderWeaselFontPoint->value() : 12;
+    style.horizontal = m_comboWeaselLayout ? (m_comboWeaselLayout->currentIndex() == 0) : true;
+    style.inlinePreedit = m_switchWeaselInlinePreedit ? m_switchWeaselInlinePreedit->isOn() : false;
+
+    QString error;
+    if (!m_config->applyStyle(style, &error)) {
+        if (m_lblWeaselStyleStatus) {
+            m_lblWeaselStyleStatus->setText(error.isEmpty()
+                                               ? QStringLiteral("应用失败")
+                                               : error);
+        }
+        return;
+    }
+    if (m_lblWeaselStyleStatus) {
+        m_lblWeaselStyleStatus->setText(QStringLiteral("已写入 weasel.yaml 并请求重新部署"));
+    }
 }
 
 // ----------------------------------------------------------------------------

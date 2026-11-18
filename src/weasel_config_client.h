@@ -40,7 +40,10 @@ public:
     QString activeSchema() const override;
 
     /// 读取服务端当前样式（weasel.yaml → weasel::UIStyle）。
-    bool loadStyle(weasel::UIStyle* out, QString* error = nullptr);
+    bool loadStyle(WeaselStyle* out, QString* error = nullptr) override;
+
+    /// 写入 weasel.yaml 并重新部署。
+    bool applyStyle(const WeaselStyle& style, QString* error) override;
 
 private:
     /// 向服务端要一份响应（发一个空按键逼服务端回包，和上游 TIP 同一个套路）。

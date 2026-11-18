@@ -162,6 +162,10 @@ private:
     void refreshDictionaryList();
     /// 刷新皮肤下拉框。
     void refreshSkinList();
+    /// 从服务端读取当前生效的 Weasel 样式（内容层）。
+    void refreshWeaselStyle();
+    /// 把界面上的 Weasel 样式写回 weasel.yaml 并请求重新部署。
+    void applyWeaselStyle();
 
     QWidget* createNavigationPane();
     QWidget* createPersonalizationPage();
@@ -216,6 +220,16 @@ private:
     fluent::basicinput::Button* m_btnImportSkin = nullptr;
     fluent::basicinput::Button* m_btnExportSkin = nullptr;
     fluent::textfields::Label* m_lblSkinStatus = nullptr;
+
+    // Weasel 状态栏样式（内容层，weasel.yaml）
+    fluent::basicinput::ComboBox* m_comboWeaselFontFace = nullptr;
+    fluent::basicinput::Slider* m_sliderWeaselFontPoint = nullptr;
+    fluent::textfields::Label* m_lblWeaselFontPoint = nullptr;
+    fluent::basicinput::ComboBox* m_comboWeaselLayout = nullptr;
+    fluent::basicinput::ToggleSwitch* m_switchWeaselInlinePreedit = nullptr;
+    fluent::basicinput::Button* m_btnWeaselStyleRefresh = nullptr;
+    fluent::basicinput::Button* m_btnWeaselStyleApply = nullptr;
+    fluent::textfields::Label* m_lblWeaselStyleStatus = nullptr;
 
     // 自定义快捷键
     QHash<QString, fluent::textfields::Label*> m_bindingLabels;

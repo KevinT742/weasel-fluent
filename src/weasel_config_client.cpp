@@ -7,6 +7,7 @@
 #include <windows.h>
 
 #include "schema_manager.h"
+#include "weasel_style.h"
 
 WeaselConfigClient::WeaselConfigClient() = default;
 
@@ -93,17 +94,54 @@ QString WeaselConfigClient::activeSchema() const {
     return QString::fromStdWString(status.schema_id);
 }
 
-bool WeaselConfigClient::loadStyle(weasel::UIStyle* out, QString* error) {
+bool WeaselConfigClient::loadStyle(WeaselStyle* out, QString* error) {
     if (!ensureConnected(error)) {
         return false;
     }
+    // 服务端当前生效的样式（响应流里的 weasel::UIStyle）。
     weasel::UIStyle style;
     if (!fetchResponse(nullptr, &style)) {
         if (error) *error = QStringLiteral("读取服务端样式失败");
         return false;
     }
+    WeaselStyle result;
+    result.fontFace = QString::fromStdWString(style.font_face);
+    // 用户没配 weasel.yaml 时，服务端的样式全是默认值（0）——给个能用的兜底。
+    result.fontPoint = style.font_point > 0 ? style.font_point : 12;
+    result.labelFontPoint = style.label_font_point > 0 ? style.label_font_point
+                                                     : result.fontPoint;
+    result.commentFontPoint = style.comment_font_point > 0 ? style.comment_font_point
+                                                          : result.fontPoint;
+    result.horizontal = (style.layout_type == weasel::UIStyle::LAYOUT_HORIZONTAL ||
+                         style.layout_type == weasel::UIStyle::LAYOUT_HORIZONTAL_FULLSCREEN);
+    result.inlinePreedit = style.inline_preedit;
+    switch (style.preedit_type) {
+    case weasel::UIStyle::PREVIEW:
+        result.preeditType = QStringLiteral("preview");
+        break;
+    case weasel::UIStyle::PREVIEW_ALL:
+        result.preeditType = QStringLiteral("preview_all");
+        break;
+    default:
+        result.preeditType = QStringLiteral("composition");
+        break;
+    }
+    result.markText = QString::fromStdWString(style.mark_text);
+    result.candidateAbbreviateLength = style.candidate_abbreviate_length;
+    result.displayTrayIcon = style.display_tray_icon;
     if (out) {
-        *out = style;
+        *out = result;
     }
     return true;
+}
+
+bool WeaselConfigClient::applyStyle(const WeaselStyle& style, QString* error) {
+    // 样式内容写进用户 Rime 目录的 weasel.yaml（服务端 LoadWeaselUIStyle() 读它），
+    // 部署这一步才走 IPC。
+    QString saveError;
+    if (!WeaselStyleManager::instance().save(style, &saveError)) {
+        if (error) *error = saveError;
+        return false;
+    }
+    return deployFull(error);
 }
