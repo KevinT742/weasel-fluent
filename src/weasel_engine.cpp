@@ -218,7 +218,16 @@ void WeaselEngine::registerLanguageBarCommands() {
         return true;
     };
     m_server->AddMenuHandler(ID_WEASELTRAY_DEPLOY, redeploy);
-    m_server->AddMenuHandler(ID_WEASELTRAY_SYNC, redeploy);
+
+    // 「同步用户数据」跟「重新部署」是**两件事**：
+    //   重新部署 = librime 重新编译词库（start_maintenance + join）；
+    //   同步     = 把用户自造词同步到 sync 目录（sync_user_data）。
+    // 上游 WeaselServer 走的是 WeaselDeployer /sync，这里对齐它的语义 ——
+    // 之前误把 SYNC 也映射到 deploy，菜单上写着「同步用户数据」实际却在重新编译。
+    m_server->AddMenuHandler(ID_WEASELTRAY_SYNC, [this]() {
+        this->syncUserData();
+        return true;
+    });
 
     // 打开设置中心（独立进程）。
     // QProcess 是 Qt 类，必须投回 Qt 线程再用（见上面的线程模型说明）。
@@ -407,6 +416,16 @@ void WeaselEngine::dispatchCommand(const Command& cmd) {
         }
         break;
     }
+    case CommandType::Sync: {
+        // 同步用户数据（把用户词库同步到 sync 目录）。
+        // 与 Deploy 分开：部署是重新编译词库，同步是搬运用户自造词 ——
+        // 上游 WeaselServer 走的是 WeaselDeployer /sync，语义要对齐。
+        RimeApi* api = rime_get_api();
+        if (api && !api->sync_user_data()) {
+            qWarning() << "[weasel-fluent] 同步用户数据失败";
+        }
+        break;
+    }
     }
 }
 
@@ -559,6 +578,26 @@ bool WeaselEngine::deployFull(QString* error) {
     PostMessageW(hwnd, kCommandMessageId, 0, 0);
 
     if (error) *error = QStringLiteral("已重新部署");
+    return true;
+}
+
+bool WeaselEngine::syncUserData(QString* error) {
+    // 同步也要跑在服务端线程（librime 的接口不是线程安全的）。
+    // 与 deployFull() 一样走命令窗口。
+    HWND hwnd = m_commandHwnd.load();
+    if (!hwnd) {
+        if (error) *error = QStringLiteral("Weasel 服务未运行，无法同步用户数据");
+        return false;
+    }
+    Command cmd;
+    cmd.type = CommandType::Sync;
+    {
+        QMutexLocker lock(&m_commandMutex);
+        m_commands.push_back(cmd);
+    }
+    PostMessageW(hwnd, kCommandMessageId, 0, 0);
+
+    if (error) *error = QStringLiteral("已同步用户数据");
     return true;
 }
 

@@ -84,6 +84,11 @@ public:
     /// 触发全量重新部署（RimeStartMaintenance(FullDeploy) + Join）。
     bool deployFull(QString* error = nullptr);
 
+    /// 同步用户数据（librime 的 sync_user_data）—— 语言栏「同步用户数据」。
+    /// 与 deployFull() 是两件事：部署是重新编译词库，同步是把用户词库
+    /// 同步到 sync 目录（上游 WeaselServer 走的是 WeaselDeployer /sync）。
+    bool syncUserData(QString* error = nullptr);
+
     /// IPC 服务端窗口句柄（安装器与托盘用）。
     HWND serverHwnd() const;
 
@@ -108,6 +113,10 @@ private:
         ClearComposition,
         SetOption,
         Deploy,
+        /// 同步用户数据（librime 的 sync_user_data）—— 语言栏「同步用户数据」。
+        /// 与 Deploy 是两件事：Deploy 是重新编译词库，Sync 是把用户词库同步到
+        /// sync 目录。上游 WeaselServer 走的是 WeaselDeployer /sync。
+        Sync,
     };
 
     struct Command {

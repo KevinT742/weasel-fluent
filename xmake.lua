@@ -283,6 +283,9 @@ target("weasel-fluent-cpp-qt")
     add_files("src/*.cpp")
     add_files("src/*.h")
     add_files("assets/emojis.qrc")
+    -- 主程序的资源：应用图标 + 版本信息 + manifest（此前 exe 一个资源都没有）。
+    -- .rc 必须编进**目标**（静态库里的 .rc 不会被链接器带上）。
+    add_files("src/weasel-app.rc")
 
     on_load(function (target)
         if not target:data("qt") then

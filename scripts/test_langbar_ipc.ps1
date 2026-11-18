@@ -47,6 +47,7 @@ $WEASEL_IPC_TRAY_COMMAND     = 0x800D
 $ID_WEASELTRAY_ENABLE_ASCII  = 40013
 $ID_WEASELTRAY_DISABLE_ASCII = 40014
 $ID_WEASELTRAY_DEPLOY        = 40002
+$ID_WEASELTRAY_SYNC          = 40012
 $ID_UNREGISTERED             = 49000   # 故意不注册，用来验证「未命中 ⇒ 回包 0」
 
 $VKEY_A = 0x41   # Rime keycode：可处理的普通字符键
@@ -228,7 +229,20 @@ if ($deploy -eq 1) {
     $failures++
 }
 
-# ── 8. 收尾：清组合态、结束会话 ────────────────────────────────────────────
+# ── 8. 「同步用户数据」是独立的一条命令（不是重新部署的别名）────────────────
+#
+# 上游 WeaselServer 把 SYNC 交给 WeaselDeployer /sync（真同步），
+# 我们一度误把它映射到 deploy（= 重新编译词库），菜单写着「同步用户数据」
+# 实际却在重新部署 —— 语义不对。现在是独立的 sync_user_data。
+$sync = Send-TrayCommand -MenuId $ID_WEASELTRAY_SYNC -SessionId $sessionId
+if ($sync -eq 1) {
+    Write-Host "PASS: the language bar 'Sync user data' command reached its own handler" -ForegroundColor Green
+} else {
+    Write-Host "FAIL: the 'Sync user data' command was NOT handled (got $sync)" -ForegroundColor Red
+    $failures++
+}
+
+# ── 9. 收尾：清组合态、结束会话 ────────────────────────────────────────────
 Send-Ipc -Msg $WEASEL_IPC_CLEAR_COMPOSITION -wParam 0 -lParam $sessionId | Out-Null
 Send-Ipc -Msg $WEASEL_IPC_END_SESSION -wParam 0 -lParam $sessionId | Out-Null
 

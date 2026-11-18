@@ -215,13 +215,87 @@ if (-not $probe.ContainsKey("__loaded__") -or -not $probe["__loaded__"]) {
     }
 }
 
-# 图标源文件也必须在仓库里（.rc 里引的是相对路径 ../../3rdparty/weasel/resource/*）。
-$resourceDir = Join-Path $RepoRoot "3rdparty\weasel\resource"
-foreach ($icon in @("weasel.ico", "en.ico", "zh.ico", "reload.ico", "full.ico", "half.ico")) {
-    if (-not (Test-Path (Join-Path $resourceDir $icon))) {
-        $problems += "missing icon source: 3rdparty/weasel/resource/$icon"
+# 图标源文件也必须在仓库里（.rc 里引的是相对路径 ..\assets\langbar\*.ico），
+# 且每张都要带齐语言栏/资源管理器会用到的分辨率。
+$resourceDir = Join-Path $RepoRoot "assets\langbar"
+$iconFiles = @("langbar-app.ico", "langbar-en.ico", "langbar-zh.ico",
+                "langbar-reload.ico", "langbar-full.ico", "langbar-half.ico")
+$expectedSizes = @(16, 20, 24, 32, 40, 48, 64, 256)
+
+Add-Type -AssemblyName System.Drawing
+foreach ($icon in $iconFiles) {
+    $path = Join-Path $resourceDir $icon
+    if (-not (Test-Path $path)) {
+        $problems += "missing icon source: assets/langbar/$icon"
         Write-Host "FAIL: missing icon source $icon" -ForegroundColor Red
+        continue
     }
+    # 读 .ico 里的每一帧尺寸
+    $raw = [System.IO.File]::ReadAllBytes($path)
+    $count = [BitConverter]::ToUInt16($raw, 4)
+    $sizes = @()
+    for ($i = 0; $i -lt $count; $i++) {
+        $off = 6 + 16 * $i
+        $w = $raw[$off]; if ($w -eq 0) { $w = 256 }
+        $h = $raw[$off + 1]; if ($h -eq 0) { $h = 256 }
+        $sizes += $w
+    }
+    $missingSizes = @($expectedSizes | Where-Object { $sizes -notcontains $_ })
+    if ($missingSizes.Count -gt 0) {
+        $problems += ("icon $icon is missing resolutions: " + ($missingSizes -join ", "))
+        Write-Host ("FAIL: $icon is missing resolutions " + ($missingSizes -join ", ")) -ForegroundColor Red
+    } else {
+        Write-Host ("    OK  icon $icon has all 8 resolutions") -ForegroundColor DarkGray
+    }
+}
+
+# .rc 里引用的图标路径必须都指向真实存在的文件（rc.exe 找不到时**不报错**，
+# 只是静默丢掉那个资源 ⇒ 编译链接全绿但图标缺失）。
+$rcPath = Join-Path $RepoRoot "tip\weasel-tsf.rc"
+if (-not (Test-Path $rcPath)) {
+    $problems += "tip/weasel-tsf.rc is missing"
+    Write-Host "FAIL: tip/weasel-tsf.rc is missing" -ForegroundColor Red
+} else {
+    # .rc 是 UTF-16LE（BOM FF FE）
+    $rcText = [System.IO.File]::ReadAllText($rcPath, [System.Text.Encoding]::Unicode)
+    $refs = [regex]::Matches($rcText, 'ICON\s+"([^"]+)"') | ForEach-Object { $_.Groups[1].Value }
+    if ($refs.Count -eq 0) {
+        $problems += "tip/weasel-tsf.rc declares no ICON resources"
+        Write-Host "FAIL: tip/weasel-tsf.rc declares no ICON resources" -ForegroundColor Red
+    }
+    foreach ($ref in $refs) {
+        # .rc 里的路径是相对 .rc 自身所在目录的
+        $resolved = [System.IO.Path]::GetFullPath(
+            (Join-Path (Split-Path -Parent $rcPath) ($ref -replace '\\\\', '\')))
+        if (-not (Test-Path $resolved)) {
+            $problems += "the .rc references a missing icon file: $ref"
+            Write-Host "FAIL: the .rc references a missing icon file: $ref" -ForegroundColor Red
+        } else {
+            Write-Host ("    OK  .rc -> {0}" -f (Split-Path -Leaf $resolved)) -ForegroundColor DarkGray
+        }
+    }
+}
+
+# ── 5. 简体中文菜单必须真的是简体 ─────────────────────────────────────────
+#
+# 上游的 IDR_MENU_POPUP_HANS 写的是**繁体**（「設定 / 詞典管理 / 重新啟動服務」），
+# 而简体中文系统的语言栏加载的恰恰就是 HANS 那份菜单 ⇒ 用户看到的是繁体界面。
+# 这里直接在 DLL 的字节里找 UTF-16LE 的简体菜单文字，断言它确实编进去了。
+$dllBytes = [System.IO.File]::ReadAllBytes($dll)
+$utf16 = [System.Text.Encoding]::Unicode.GetBytes("输入法设置")
+$found = $false
+for ($i = 0; $i -le $dllBytes.Length - $utf16.Length; $i++) {
+    $hit = $true
+    for ($j = 0; $j -lt $utf16.Length; $j++) {
+        if ($dllBytes[$i + $j] -ne $utf16[$j]) { $hit = $false; break }
+    }
+    if ($hit) { $found = $true; break }
+}
+if ($found) {
+    Write-Host "PASS: the Simplified Chinese language bar menu is embedded in the TIP DLL" -ForegroundColor Green
+} else {
+    $problems += "the Simplified Chinese menu text was not found in the TIP DLL"
+    Write-Host "FAIL: the Simplified Chinese menu text was not found in the TIP DLL" -ForegroundColor Red
 }
 
 Write-Host ""

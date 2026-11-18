@@ -342,6 +342,54 @@ TIP: _HandleLangBarMenuSelect(wID)
 桌面版语言栏（现代输入法指示器不走 TSF 的 `CLangBarItemButton`），这一步无法自动化，
 需要在装有本仓 TIP 的机器上人工点一次右键菜单确认。
 
+### T12 执行记录（2026-11-18，已完成）—— 语言栏的视觉与语义优化
+
+T11 把语言栏「接通」了，但**接上之后才看清它长什么样**：那套界面是上游 Weasel 的老 Win32 遗产，
+跟本项目的 Fluent 视觉语言完全不搭，而且有一处语义是错的。本任务收拾干净。
+
+| 项 | 改前 | 改后 |
+| :--- | :--- | :--- |
+| **语言栏图标** | 上游那套 Windows 3.x 时代的粗方框图标（深灰「中」、棕红「A」、绿色沙漏），**16px 下糊成一团**（语言栏实际就是用 `SM_CXSMICON` = 16px） | 本仓自己的 Fluent 版：`assets/langbar/*.ico`，**圆角方块 + 纯色底 + 居中白色粗体字形**，与托盘图标（`src/tray_menu.cpp` 的 `makeTrayIcon`）同一套画法与语义（中文=强调蓝，英文=中性灰）。八种分辨率（16/20/24/32/40/48/64/256） |
+| **语言栏菜单文案** | 简体中文系统加载的是 `IDR_MENU_POPUP_HANS`，而**上游把它写成了繁体**（「設定 / 詞典管理 / 重新啟動服務」）⇒ 简体用户看到繁体界面 | HANS = 简体中文，HANT = 繁体，默认 = 英文；用词与设置中心 / 候选窗菜单统一（「词库与维护」「重新部署词库与配置」「用户词库目录」…） |
+| **「同步用户数据」** | 被我误映射到 deploy —— 菜单写着「同步用户数据」，实际在做**重新编译词库** | 独立的 `sync_user_data`（上游 WeaselServer 走的是 `WeaselDeployer /sync`，语义对齐它） |
+| **主 exe 的资源** | **一个资源都没有**（`EnumResourceTypes` 枚举过：图标 / 版本信息 / manifest 全空）⇒ 资源管理器、Alt-Tab、任务栏里都是系统通用占位图，文件属性也是空的 | 应用图标 + 版本信息 + manifest（asInvoker / PerMonitorV2 / 长路径） |
+
+**为什么 exe 的资源是「零」**：xmake 3.1 **没有 `set_icon()` 接口**（试了，直接报
+`unknown interface: set_icon()`），而 MSVC 链接器也没有生成 manifest（自检里
+`build\Release` 下没有任何 `.manifest` 文件，exe 里也没有 `RT_MANIFEST`）。
+⇒ 与 TIP 一样，自己写 `.rc`（`src/weasel-app.rc` + `src/weasel-app.manifest`），
+用 `add_files("src/weasel-app.rc")` 编进目标。
+
+**实测推翻的假设（这一轮又踩了四个坑，都写进代码注释了）**：
+
+1. ❌「`.rc` 里的分隔符写 `SEPARATOR` 就行」 → **必须写 `MENUITEM SEPARATOR`**。
+   裸 `SEPARATOR` 会让 rc.exe 报 **`RC2122 : unknown menu subtype`**，
+   而且报错行号指向的是**那条分隔符**、真正出错的是它前面那一段的解析状态 ——
+   典型的「报错位置离病因不远但也不是病因」。
+2. ❌「`IDI_APP ICON "x.ico"` 里 ID 可以是任意标识符」 → **必须是数值**。
+   rc.exe 把未定义的标识符当成**命名资源**（`MYICON ICON` ⇒ 名字叫 MYICON 的资源），
+   而 Windows 选「应用图标」只看**数值 ID 最小**的 `RT_GROUP_ICON`
+   ⇒ 命名资源不会被用上，结果是**图标编进去了却依然显示通用占位图**。
+   （ID 也不能用 1：rc.exe 会把 .ico 里每一幅图编成 `RT_ICON(3)` 且 ID 从 1 自动排，
+   本图标 8 幅 ⇒ 1..8 已占用。）
+3. ❌「`.rc` 里的图标路径相对工作目录解析」 → 相对 **`.rc` 自身所在目录**。
+   上游的 `.rc` 在 `WeaselTSF/` 下、图标在 `<repo>/resource/`，所以是 `..\resource\`；
+   我们的 `.rc` 在 `tip/`、图标在 `assets/langbar/` ⇒ `..\assets\langbar\`。
+4. ❌「`.rc` 里的图标找不到会报错」 → **rc.exe 找不到图标文件时会静默跳过**
+   （菜单/图标缺失，但编译链接全绿）。这就是为什么自检里必须**枚举资源树**
+   并逐个 `FindResourceW` 断言，而不是看编译日志。
+
+**验证**：
+
+- ✅ 资源枚举：TIP DLL 的 6 个 `RT_GROUP_ICON`（100/101/102/103/106/107，每个 8 幅图）
+  + 3 个 `RT_MENU`（105/108/109）都在；主 exe 的 `RT_GROUP_ICON #100` + `RT_VERSION #1`
+  + `RT_MANIFEST #1` 都在（改前是「零资源」）；
+- ✅ **把图标从 DLL 里真的抠出来目视核对**（`FindResourceW` → `LockResource` → 落盘 PNG），
+  确认资源段里就是我们的 Fluent 图标，不是「编译过了但内容不对」；
+- ✅ 自检新增三组断言：每张 .ico 必须齐 8 种分辨率、`.rc` 引用的每个图标文件都必须真实存在、
+  **简体中文菜单文字必须以 UTF-16LE 出现在 DLL 里**（防「又写回繁体」）；
+- ✅ 端到端再加一条：`ID_WEASELTRAY_SYNC`（40012）命中**自己那个**处理器。
+
 ---
 
 ## File Structure
