@@ -28,6 +28,8 @@ struct RimeUiState {
     /// 中/英文模式。Weasel 路径由 weasel::Status::ascii_mode 提供，
     /// 由 Weasel 桥接推送的 status.ascii_mode 驱动。
     bool asciiMode = false;
+    /// 全/半角模式。Weasel 路径由 weasel::Status::full_shape 提供。
+    bool fullShape = false;
 };
 
 #endif // RIME_UI_STATE_H

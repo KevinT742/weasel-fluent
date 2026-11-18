@@ -210,6 +210,37 @@ T1 执行中撞到三条与计划假设不符的事实，已回写：
   WeaselRoot / Run 自启项 / 停官方 WeaselServer）与 TEST 17（打包内容检查），
   **共 17 项**。
 
+### T8/T9 执行记录（2026-11-18，已完成）—— 安装器、打包与端到端验收
+
+实测中又撞到六个坑，全部已修：
+
+| 现象 | 根因 | 修法 |
+| :--- | :--- | :--- |
+| `regsvr32` 返回非零，`HKCU` 影子注册没落地 | 上游的 `RegisterProfiles()` 走 `ITfInputProcessorProfiles::AddLanguageProfile`，那是**机器级**路径；没有管理员权限时必然 E_FAIL（本机官方 Weasel 是 `system32\weasel.dll`，profile 早已在机器级注册，`AddLanguageProfile` 照样 E_FAIL） | 逐用户注册改为两条免提权的路：① 直接按 TSF 的注册表布局写 `HKCU\Software\Microsoft\CTF\TIP\{CLSID}\LanguageProfile\0x0000xxxx\{ProfileGUID}`；② 用系统的 `InstallLayoutOrTip`（imm32 导出）把 TIP 加进用户语言列表 |
+| 注册表里的 `InprocServer32` 指向 **regsvr32.exe** | UCRT 的 `DllMainCRTStartup` 用 `GetProcAddress(hmod, "DllMain")` **动态查找**用户的 DllMain —— 不在导出表里就永远不会被调用 ⇒ 上游 `g_hInst` 一直是空 ⇒ `GetModuleFileNameW(g_hInst,…)` 拿到宿主进程路径 | 补丁 0007（上游 DllMain 改名）+ `tip/weasel_fluent_dllmain.cpp` 提供 C 链接入口 + `tip/weasel-fluent-tsf.def` 导出 `DllMain`（顺带：`.def` 文件必须 **CRLF + ASCII**，链接器的 def 解析器不认裸 LF，也不认 UTF-8 中文注释） |
+| 双击 `build\Release\weasel-fluent-cpp-qt.exe` 直接报「无法定位程序输入点 `?setGeometry@QStackedLayout…`」 | **不是编译器问题，是运行时加载了错的 Qt**：本机 `PATH` 里排着 `F:\ST\STM32CubeCLT_1.21.0\STM32CubeProgrammer\bin`，里面有一套 **Qt 6.6.1** 的 `Qt6Core/Qt6Gui/Qt6Widgets/Qt6Svg`；exe 是用 **Qt 6.8.2** 编译的，而构建目录里没有 Qt DLL ⇒ 运行时从 PATH 捡了 6.6.1 | 两层根治：① `main()` 开头 `SetDefaultDllDirectories(APPLICATION_DIR｜SYSTEM32｜USER_DIRS)`，**完全忽略 PATH**；② xmake 的 after_build 把 Qt 6.8.2 的 DLL 与 `plugins\{platforms,styles}` 拷到输出目录 |
+| 自检「绿」但用户双击就崩 | 自检脚本**把 Qt 6.8.2 前置到了 PATH**，恰好把上面那个真问题遮住了 | 自检不再预置 PATH —— 按**用户双击 exe 的真实方式**跑（`build/Release` 自带 Qt DLL） |
+| 服务在跑时自检探针取不到任何候选 | 上游 `weasel::Server::Start()` 在单实例互斥量被占用时**直接返回 0**（没有窗口）。我们把 `m_handler->Initialize()` 与 `OnUpdateUI` 都放在 `if (hwnd)` 里 ⇒ 引擎没初始化、状态也传不回 Qt 线程；命令还投给了一个**不存在的窗口** | ① 引擎初始化与状态回调**无条件**执行；② 自建一个**命令窗口**（message-only）专门派发 UI 命令；③ 拿不到上游服务端窗口时，用自己的消息循环兜底（退出时 `PostThreadMessage(WM_QUIT)`） |
+| 安装时 `Copy-Item` 报「文件正被占用」 | TIP DLL 被**已经加载了它的应用**（ctfmon / 各输入框宿主）占着 | 重试 5 次；仍被占用就改用带时间戳的文件名安装，注册表指向新文件（旧文件等那些应用退出后自然释放） |
+
+**另外两条环境事实**：
+
+1. **本机的「官方 Weasel」是 Windows 内置的那套**：`HKLM\…\CLSID\{A3F4CDED-…}\InprocServer32`
+   → `C:\WINDOWS\system32\weasel.dll`（不是 `F:\Rime\weasel-0.17.4` 那套）。
+   它会在需要输入时被拉起并**重新占住用户词库的 LOCK** ⇒ 安装器必须停掉它，
+   而且它会自己再起来（被 ctfmon 里已加载的官方 TIP 拉起）。
+2. **`AddLanguageProfile` 失败不影响使用**：官方 profile 已在机器级注册，
+   语言列表里的 `0804:{A3F4CDED-…}{3D02CAB6-…}` 条目直接生效。
+
+**端到端验收结果**（本机，装了官方 Weasel 的环境）：
+
+- ✅ `install.ps1` 免提权安装成功，`HKCU` 影子注册指向本仓的 TIP DLL，
+  `WeaselRoot` / `Run\WeaselFluent` 均已写入；
+- ✅ `uninstall.ps1` 反注册 + 删除影子注册 + 删安装目录，官方 Weasel 可恢复；
+- ✅ 服务进程起来后内存 ~141 MB、IPC 管道 `\\.\pipe\<用户>\WeaselFluentNamedPipe` 就绪；
+- ✅ 自检 17 项全绿（含独立进程的 Weasel 运行时端到端探针）；
+- ✅ 在**PATH 里完全没有 Qt** 的情况下直接跑 `build\Release` 的 exe 仍然正常（用户双击场景）。
+
 ---
 
 ## File Structure

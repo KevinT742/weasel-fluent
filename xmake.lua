@@ -320,6 +320,45 @@ target("weasel-fluent-cpp-qt")
                 if os.isfile(rime_dll) then
                     os.cp(rime_dll, path.join(stage_dir, "rime.dll"))
                 end
+                -- 把 Qt 运行时 DLL 与平台插件也放到 exe 旁边。
+                --
+                -- 为什么必须这么做：exe 是用 Qt 6.8.2 编译的，而 DLL 搜索默认
+                -- 会**先看 PATH**。本机 PATH 里就排着 STM32CubeProgrammer 的 bin，
+                -- 里面有一套 Qt 6.6.1 的 Qt6Core/Qt6Gui/Qt6Widgets/Qt6Svg，
+                -- 一旦从 PATH 里捡到它们，双击 exe 就会报
+                -- 「无法定位程序输入点 ?setGeometry@QStackedLayout...」。
+                -- 运行时另有一层保险：main() 开头用 SetDefaultDllDirectories
+                -- 把搜索顺序固定为「exe 目录 + System32」，完全忽略 PATH。
+                import("core.project.config")
+                local qt_sdk = config.get("qt")
+                if qt_sdk then
+                    local qt_bin = path.join(qt_sdk, "bin")
+                    for _, dll in ipairs({ "Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6Svg.dll" }) do
+                        local src = path.join(qt_bin, dll)
+                        if os.isfile(src) then
+                            os.cp(src, path.join(stage_dir, dll))
+                        end
+                    end
+                    -- 平台插件（qwindows）与样式插件。
+                    -- 注意 Qt 的插件目录在 **SDK 根下**（msvc2022_64\plugins），
+                    -- 不在 bin\ 里。
+                    local plugins_root = path.join(stage_dir, "plugins")
+                    if not os.isdir(plugins_root) then
+                        os.mkdir(plugins_root)
+                    end
+                    for _, sub in ipairs({ "platforms", "styles" }) do
+                        local src_dir = path.join(qt_sdk, "plugins", sub)
+                        local dst_dir = path.join(plugins_root, sub)
+                        if os.isdir(src_dir) then
+                            if not os.isdir(dst_dir) then
+                                os.mkdir(dst_dir)
+                            end
+                            for _, f in ipairs(os.files(path.join(src_dir, "*.dll"))) do
+                                os.cp(f, path.join(dst_dir, path.filename(f)))
+                            end
+                        end
+                    end
+                end
                 local data_dir = path.join(stage_dir, "data")
                 if not os.isdir(data_dir) then
                     os.mkdir(data_dir)
@@ -372,7 +411,7 @@ target("weasel-fluent-tsf")
     add_linkdirs("deps/boost_1_88_0/stage/lib")
     add_links("boost_thread", "boost_serialization", "boost_system", "boost_atomic")
     add_files("tip/*.cpp")
-    add_files("3rdparty/weasel/WeaselTSF/WeaselTSF.def")
+    add_files("tip/weasel-fluent-tsf.def")
 
     after_build(function (target)
         local targetfile = target:targetfile()

@@ -20,6 +20,7 @@ RimeUiState FluentUiAdapter::toUiState(const weasel::Context& ctx, const weasel:
     st.pageNo = ctx.cinfo.currentPage;
     st.isLastPage = ctx.cinfo.is_last_page;
     st.asciiMode = status.ascii_mode;
+    st.fullShape = status.full_shape;
 
     // 上游的 candies/comments/labels 都是 std::vector<weasel::Text>，
     // 文本要取 Text::str 而不是直接当 wstring 用。

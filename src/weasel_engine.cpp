@@ -24,6 +24,24 @@ namespace {
 /// 上游用的是 40001–40016（resource.h 的 ID_WEASELTRAY_*），这里从 41001 起。
 constexpr UINT kWeaselFluentCommandId = 41001;
 
+/// 自建命令窗口用的消息号。
+constexpr UINT kCommandMessageId = WM_APP + 1;
+
+/// 命令窗口的类名。
+constexpr const wchar_t* kCommandWindowClass = L"WeaselFluentCommandWindow";
+
+/// 命令窗口的窗口过程：把 UI 命令交给服务端线程执行。
+LRESULT CALLBACK CommandWindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    if (msg == kCommandMessageId) {
+        auto* engine = reinterpret_cast<WeaselEngine*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (engine) {
+            engine->executePendingCommands();
+        }
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
 /// 记录「当前活动会话」的 handler。
 ///
 /// 上游 `RimeWithWeaselHandler::m_active_session` 是私有的，而我们的候选窗
@@ -76,25 +94,62 @@ bool WeaselEngine::start(QString* error) {
     // 消息循环）。Qt 主线程只负责界面。
     m_running = true;
     m_serverThread = std::thread([this]() {
+        m_serverThreadId.store(::GetCurrentThreadId());
         HWND hwnd = m_server->Start();
-        if (hwnd) {
-            // 上游用这个回调通知「托盘要刷新」；我们用它把组合态送到 Qt 线程。
-            m_handler->OnUpdateUI([this]() { onServerThreadUpdate(); });
 
-            m_handler->Initialize();
+        // 自建「命令窗口」：UI 侧（候选窗 / 扩展面板 / 托盘）的按键、选词、
+        // 翻页、选项命令都投递给它，由**服务端线程**执行 ——
+        // handler 的会话表不是线程安全的。
+        //
+        // 为什么不用上游服务端自己的窗口：上游 `weasel::Server::Start()` 在
+        // 单实例互斥量被占用时直接返回 0（没有窗口），此时我们仍要能驱动引擎
+        // （自检探针与服务并存、重复实例等场景）。
+        WNDCLASSEXW wc;
+        ZeroMemory(&wc, sizeof(wc));
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = CommandWindowProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = kCommandWindowClass;
+        RegisterClassExW(&wc);   // 重复注册会失败，忽略即可
+        HWND cmdHwnd = CreateWindowExW(0, kCommandWindowClass, L"", 0, 0, 0, 0, 0,
+                                       HWND_MESSAGE, nullptr, wc.hInstance, nullptr);
+        if (cmdHwnd) {
+            SetWindowLongPtrW(cmdHwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+            m_commandHwnd.store(cmdHwnd);
+        }
 
-            // 自建一个会话：没有 TIP 客户端时（独立运行 / 自检套件），
-            // 候选窗的操作要作用在某个会话上。
-            // 注意 _ReadClientInfo 会按 WEASEL_IPC_BUFFER_LENGTH 读缓冲区，
-            // 所以缓冲区必须给足长度。
-            std::vector<wchar_t> clientInfo(WEASEL_IPC_BUFFER_LENGTH, 0);
-            m_localSessionId.store(m_handler->AddSession(clientInfo.data()));
-        } else {
+        // ⚠️ 状态回流回调**必须无条件**挂上：即使 IPC 服务端没抢到（另一个实例
+        // 占着单实例互斥量），引擎照样工作，组合态也照样要能送到 Qt 线程 ——
+        // 否则候选窗永远拿不到状态（实测：服务在跑时探针取不到任何候选）。
+        m_handler->OnUpdateUI([this]() { onServerThreadUpdate(); });
+
+        if (!hwnd) {
             qWarning("Weasel IPC 服务端启动失败（可能已有实例在跑），本次仅以本地引擎模式运行。");
         }
+
+        // 引擎初始化与**有没有窗口无关**：即便 IPC 服务端没抢到，引擎也必须
+        // 初始化，否则状态永远是空的。
+        m_handler->Initialize();
+
+        // 自建一个会话：没有 TIP 客户端时（独立运行 / 自检套件），
+        // 候选窗的操作要作用在某个会话上。
+        // 注意 _ReadClientInfo 会按 WEASEL_IPC_BUFFER_LENGTH 读缓冲区，
+        // 所以缓冲区必须给足长度。
+        std::vector<wchar_t> clientInfo(WEASEL_IPC_BUFFER_LENGTH, 0);
+        m_localSessionId.store(m_handler->AddSession(clientInfo.data()));
+
         m_readySemaphore.release();
         if (hwnd) {
+            // 上游的消息循环：同时会泵我们自己的命令窗口（同一线程的窗口
+            // 都由 GetMessage/DispatchMessage 分发）。
             m_server->Run();
+        } else {
+            // 没有服务端窗口 ⇒ 自己跑一个消息循环，专门处理 UI 命令。
+            MSG msg;
+            while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
+                ::TranslateMessage(&msg);
+                ::DispatchMessageW(&msg);
+            }
         }
     });
 
@@ -111,12 +166,20 @@ void WeaselEngine::stop() {
         return;
     }
 
-    if (m_server) {
+    if (serverHwnd()) {
+        // 正常模式：让上游的消息循环退出。
         m_server->Stop();
+    } else {
+        // engine-only 模式（上游服务端窗口没建起来）：退出我们自己的消息循环。
+        const DWORD tid = m_serverThreadId.load();
+        if (tid) {
+            ::PostThreadMessageW(tid, WM_QUIT, 0, 0);
+        }
     }
     if (m_serverThread.joinable()) {
         m_serverThread.join();
     }
+    m_commandHwnd.store(nullptr);
     if (m_handler) {
         m_handler->Finalize();
         m_handler.reset();
@@ -168,9 +231,9 @@ void WeaselEngine::postCommand(const Command& cmd) {
         QMutexLocker lock(&m_commandMutex);
         m_commands.push_back(cmd);
     }
-    HWND hwnd = serverHwnd();
+    HWND hwnd = m_commandHwnd.load();
     if (hwnd) {
-        PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(kWeaselFluentCommandId, 0), 0);
+        PostMessageW(hwnd, kCommandMessageId, 0, 0);
     }
 }
 
@@ -363,18 +426,19 @@ bool WeaselEngine::deploy() {
 
 bool WeaselEngine::deployFull(QString* error) {
     // 部署要跑在服务端线程（librime 的维护接口不是线程安全的）。
+    // 走的是**命令窗口**，所以 engine-only 模式（没有上游服务端窗口）也能用。
+    HWND hwnd = m_commandHwnd.load();
+    if (!hwnd) {
+        if (error) *error = QStringLiteral("Weasel 服务未运行，无法部署");
+        return false;
+    }
     Command cmd;
     cmd.type = CommandType::Deploy;
     {
         QMutexLocker lock(&m_commandMutex);
         m_commands.push_back(cmd);
     }
-    HWND hwnd = serverHwnd();
-    if (!hwnd) {
-        if (error) *error = QStringLiteral("Weasel 服务未运行，无法部署");
-        return false;
-    }
-    PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(kWeaselFluentCommandId, 0), 0);
+    PostMessageW(hwnd, kCommandMessageId, 0, 0);
 
     if (error) *error = QStringLiteral("已重新部署");
     return true;

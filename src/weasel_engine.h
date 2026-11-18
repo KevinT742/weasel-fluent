@@ -86,6 +86,11 @@ public:
     /// 服务端是否已就绪。
     bool isRunning() const { return m_running.load(); }
 
+public:
+    /// 在服务端线程把排队的命令执行掉。
+    /// 公开是因为命令窗口的窗口过程要调用它。
+    void executePendingCommands();
+
 private:
     /// 交互命令（在服务端线程执行）。
     enum class CommandType {
@@ -109,8 +114,7 @@ private:
 
     /// 在 Qt 线程把命令排队，并投递给服务端线程。
     void postCommand(const Command& cmd);
-    /// 在服务端线程执行排队的命令。
-    void executePendingCommands();
+
     /// 在服务端线程执行单条命令。
     void dispatchCommand(const Command& cmd);
     /// 当前应当操作的会话：优先 TIP 正在用的会话，否则用本进程自建的会话。
@@ -124,6 +128,10 @@ private:
     weasel::Server* m_server = nullptr;
     std::thread m_serverThread;
     std::atomic<bool> m_running{false};
+    /// 自建的命令窗口：UI 侧的命令通过它投递给服务端线程。
+    std::atomic<HWND> m_commandHwnd{nullptr};
+    /// 服务端线程 id（engine-only 模式下用来退出我们自己的消息循环）。
+    std::atomic<DWORD> m_serverThreadId{0};
     /// 本进程自建的会话（没有 TIP 客户端时使用）。
     std::atomic<DWORD> m_localSessionId{0};
     /// 简繁状态。weasel::Status 不带这个字段，故由本类记录，

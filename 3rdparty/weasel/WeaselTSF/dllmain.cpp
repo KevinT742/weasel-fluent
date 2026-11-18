@@ -1,4 +1,4 @@
-// dllmain.cpp : Defines the entry point for the DLL application.
+﻿// dllmain.cpp : Defines the entry point for the DLL application.
 #include "stdafx.h"
 #include "Globals.h"
 #include <stdio.h>
@@ -57,7 +57,17 @@ LONG WINAPI _UnhandledExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) {
   return EXCEPTION_EXECUTE_HANDLER;
 }
 
-BOOL WINAPI DllMain(HINSTANCE hInstance, DWORD dwReason, LPVOID pvReserved) {
+// [weasel-fluent] 改名为 WeaselFluentDllMain：本文件不再提供名为 DllMain 的入口，
+// 入口改由本仓的 tip/weasel_fluent_dllmain.cpp 提供并转发到这里。
+//
+// 原因：UCRT 的 DllMainCRTStartup 是用 GetProcAddress(hmod, "DllMain") **动态**
+// 查找用户的 DllMain 的 —— DllMain 不在 DLL 的导出表里就永远不会被调用，
+// 于是上游 Globals.cpp 里的 g_hInst 一直是空：
+//   * 注册时 GetModuleFileNameW(g_hInst, ...) 拿到的是**宿主进程**（regsvr32.exe）
+//     的路径，注册表里的 InprocServer32 会指向一个错的 DLL；
+//   * 语言栏的菜单与图标（LoadMenuW / LoadImageW(g_hInst, ...)）也全部失效。
+// 本仓的 tip/weasel-fluent-tsf.def 导出了 DllMain，入口因此能被打到。
+BOOL WINAPI WeaselFluentDllMain(HINSTANCE hInstance, DWORD dwReason, LPVOID pvReserved) {
   switch (dwReason) {
     case DLL_PROCESS_ATTACH:
       g_hInst = hInstance;

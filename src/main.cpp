@@ -180,10 +180,10 @@ int runWeaselRuntimeProbe() {
     std::cout << "  -> Candidate navigation (Down / Up) OK\n";
 
     // 模式切换：中英 / 简繁 / 全半角。
-    // 状态是异步回流的（服务端 → 队列 → Qt 线程），所以给一点时间。
+    // 状态是**异步回流**的（服务端 → 队列 → Qt 线程），所以必须泵事件循环，
+    // 光 sleep 不行 —— 队列里的回调不会被执行。
     weasel.setAsciiMode(true);
-    QThread::msleep(400);
-    if (!weasel.isAsciiMode()) {
+    if (!waitForState(weasel, [](const RimeUiState& s) { return s.asciiMode; })) {
         std::cerr << "FAIL: ascii mode did not propagate to the Weasel status\n";
         return 1;
     }
@@ -194,8 +194,7 @@ int runWeaselRuntimeProbe() {
         return 1;
     }
     weasel.setFullShape(true);
-    QThread::msleep(400);
-    if (!weasel.isFullShape()) {
+    if (!waitForState(weasel, [](const RimeUiState& s) { return s.fullShape; })) {
         std::cerr << "FAIL: full shape did not propagate to the Weasel status\n";
         return 1;
     }
@@ -1082,6 +1081,23 @@ int runBenchmarkSuite() {
 }
 
 int main(int argc, char* argv[]) {
+#ifdef Q_OS_WIN
+    // 固定 DLL 搜索顺序：**只用 exe 所在目录 + System32 + 用户目录**，
+    // 完全忽略 PATH。
+    //
+    // 为什么必须这么做：exe 是用 Qt 6.8.2 编译的，而默认的 DLL 搜索会**先看
+    // PATH**。本机 PATH 里排着 `F:\ST\STM32CubeCLT_1.21.0\STM32CubeProgrammer\bin`，
+    // 里面有一套 **Qt 6.6.1** 的 Qt6Core / Qt6Gui / Qt6Widgets / Qt6Svg。
+    // 一旦从 PATH 里捡到它们，进程连启动都做不到：
+    //   「无法定位程序输入点 ?setGeometry@QStackedLayout@@UEAAXAEBVQRect@@@Z
+    //     于动态链接库 …\Qt6Widgets.dll 上。」
+    // 构建目录与发行包都自带 Qt 6.8.2 的 DLL（xmake 的 after_build 拷），
+    // 所以按目录搜索就够，而且能彻底免疫 PATH 里的任何同名库。
+    ::SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_APPLICATION_DIR |
+                                LOAD_LIBRARY_SEARCH_SYSTEM32 |
+                                LOAD_LIBRARY_SEARCH_USER_DIRS);
+#endif
+
     // Fluent-Qt high DPI preparation before QApplication
     fluent::prepareHighDpiApplication();
 

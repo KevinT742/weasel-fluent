@@ -1,0 +1,22 @@
+LIBRARY
+
+; Upstream WeaselTSF.def only exports these four COM entry points.
+; This file additionally exports DllMain, because the UCRT's DllMainCRTStartup
+; looks the user DllMain up **dynamically** via GetProcAddress(hmod, "DllMain").
+; If DllMain is not in the export table it never runs, so upstream's
+; Globals.cpp g_hInst stays NULL and:
+;   * GetModuleFileNameW(g_hInst, ...) during registration returns the HOST
+;     process path (regsvr32.exe), so the InprocServer32 registry value ends
+;     up pointing at the wrong DLL;
+;   * the language bar menu and icons (LoadMenuW/LoadImageW(g_hInst, ...))
+;     silently fail.
+; Exporting DllMain makes the UCRT find and call it.
+;
+; NOTE: keep this file ASCII with CRLF line endings -- the linker's .def
+; parser is ANSI and does not accept bare LF.
+EXPORTS
+	DllGetClassObject		PRIVATE
+	DllCanUnloadNow			PRIVATE
+	DllRegisterServer		PRIVATE
+	DllUnregisterServer		PRIVATE
+	DllMain

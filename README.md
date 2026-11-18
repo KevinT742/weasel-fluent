@@ -50,11 +50,14 @@ Win32 界面（`WeaselDeployer` 对话框、`WeaselTrayIcon` 托盘）重写为 
 
 ## 核心特性 (Features)
 
-1. **系统全局输入服务与无感上屏**：
-   - 采用低开销 Windows 底层键盘钩子（`WH_KEYBOARD_LL`），在中文模式下极速拦截拼音并喂给 Librime；
-   - 探测 `GetGUIThreadInfo` 与 UI Automation，光标在哪里，候选窗就精准跟随在文字下方；
-   - 选词时通过原生 Unicode `SendInput` 注入字符，穿透所有 Windows 11 应用（包括记事本、微信、Chrome、VS Code、Office 等）；
-   - 按 `Shift` 键无感切换中/英输入模式。
+1. **真正的 Windows TSF 输入法前端**：
+   - 直接采用官方 **小狼毫（Weasel）** 的 TSF 实现作为内核基座（`3rdparty/weasel/`，GPLv3），
+     组合态、内联预编辑、语言栏、显示属性、Compartment 全部由上游负责，输入链路是
+     **系统原生的 TSF 管线**，不是键盘钩子；
+   - 候选窗仍然是本仓的 Fluent 实现：上游的 Direct2D 面板被编译掉（vendor 补丁 0001），
+     服务端把组合态映射过来渲染，**任何时候只有一套候选窗**；
+   - 光标定位由 TIP 的 `ITfContext` 提供，候选窗精准跟随输入位置；
+   - 选词与上屏经 TSF 上下文完成，穿透所有 Windows 11 应用。
 
 2. **自适应 Windows 11 调色板 (`AccentPalette`)**：
    - 彻底修复了原版获取暗红/猪肝红底色的缺陷；
@@ -69,9 +72,12 @@ Win32 界面（`WeaselDeployer` 对话框、`WeaselTrayIcon` 托盘）重写为 
    - 弹性滑动选择指示器（Fluid Elastic Indicator），五大分页模块对齐微软官方控件库规范；
    - **方案选择、自定义词库、自定义皮肤、自定义快捷键**四项均为真功能，改动会触发真正的全量重新编译。
 
-5. **免安装独立打包发行 (`dist/`)**：
-   - 前后端全量预装包内置 64 位 `rime.dll` 与 Rime 基础数据，开箱即用；
-   - 开箱即用，无需配置复杂的系统注册表或管理员提权；
+5. **免提权安装，一键接管官方 Weasel (`scripts/install.ps1`)**：
+   - 每用户安装到 `%LOCALAPPDATA%\Programs\WeaselFluent`，**不需要管理员**；
+   - 靠 **HKCU CLSID 影子注册**顶掉机器上已装的官方 Weasel：COM 解析
+     `HKCU\Software\Classes\CLSID` 优先于 `HKLM`，语言列表里原有的条目直接生效；
+   - 卸载即恢复官方 Weasel（删掉 HKCU 那一份即可）；
+   - 发行包内置 64 位 `rime.dll` 与 Rime 基础数据，开箱即用；
    - 托盘只负责「状态 / 部署 / 设置 / 退出」，输入法选择交给系统语言切换（`Win+Space`）。
 
 ---
@@ -81,9 +87,17 @@ Win32 界面（`WeaselDeployer` 对话框、`WeaselTrayIcon` 托盘）重写为 
 ### 方式一：直接运行预编译打包发行包 (推荐)
 1. 在 [Releases](https://github.com/bpmstall/weasel-fluent/releases) 下载最新 `weasel-fluent-v1.0.0-windows-x64.zip`；
 2. 解压到任意目录（例如 `D:\weasel-fluent\`）；
-3. 双击运行 `install_and_run.bat`，即可一键停止旧版服务并唤起 Rime Fluent 服务；
+3. 双击运行 `install_and_run.bat` —— 它会调用 `install.ps1`：
+   停掉官方 `WeaselServer.exe`（它占着用户词库的锁）→ 把 payload 复制到
+   `%LOCALAPPDATA%\Programs\WeaselFluent` → 注册本仓的 TIP DLL
+   （**HKCU 影子注册**，免管理员，顶掉官方 Weasel 的 CLSID）→ 写自启项 → 启动服务；
 4. 任务栏右下角托盘区将出现输入法托盘图标，在任意软件中打字即可体验；
-5. 按 `Shift` 键切换中英，按 `Tab` 展开多候选大矩阵，右键托盘图标可进入“设置中心”。
+5. 按 `Shift` 切换中英，按 `Tab` 展开多候选大矩阵，右键托盘图标可进入“设置中心”。
+
+> 卸载：运行发行包里的 `uninstall.ps1`（或
+> `powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1`）。
+> 删掉 HKCU 的影子注册后，**官方 Weasel 会立刻恢复**；用户数据 `%APPDATA%\Rime`
+> 默认保留，加 `-Purge` 才一并清除。
 
 ### 方式二：从源码编译构建
 
@@ -102,7 +116,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\fetch_rime.ps1
 # 3. 编译 Release 版本（rime.dll 与 data/ 会自动就位到输出目录）
 xmake build
 
-# 4. 运行全部自检（路径红线 / 词库残留 / 许可证 / 14 项单元集成测试）
+# 4. 运行全部自检（路径红线 / 词库残留 / 许可证 / TIP DLL / 17 项单元集成测试）
 powershell -ExecutionPolicy Bypass -File .\scripts\run-selfchecks.ps1
 
 # 5. 运行性能基准测试
@@ -113,8 +127,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package_dist.ps1
 ```
 
 > **关于 Boost**：仓库内置了官方 Weasel 的 IPC / 配置层源码（`3rdparty/weasel/`，GPLv3）。
-> 编译这部分需要 Boost 1.88：`powershell -ExecutionPolicy Bypass -File .\scripts\build_boost.ps1`。
-> Round 2 会把它链接进主程序；当前 Round 1 已 vendor 源码并记录上游 commit。
+> 编译这部分需要 Boost 1.88：`powershell -ExecutionPolicy Bypass -File .\scripts\build_boost_libs.ps1`
+> （Boost 1.88 的 b2 会静默跳过 `thread` 等组件，所以脚本直接调 `cl.exe` 编）。
+> 编译产物还要应用上游补丁：`powershell -ExecutionPolicy Bypass -File .\scripts\apply-weasel-patches.ps1`
+> （幂等；补丁清单见 `3rdparty/weasel/UPSTREAM.md`）。
 >
 > **关于词库**：发行包不内置第三方大词库，默认方案为 librime 自带的**朙月拼音**
 > （`luna_pinyin`）。需要更大的词库时，在设置中心「词库与维护 → 自定义词库」里
@@ -143,10 +159,42 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package_dist.ps1
 | `(无参数)` | 以系统后台输入法服务模式运行，驻留托盘并接管打字 | `.\weasel-fluent-cpp-qt.exe` |
 | `--settings` / `-s` | 独立打开 WinUI 风格设置中心 | `.\weasel-fluent-cpp-qt.exe --settings` |
 | `--demo` | 静态预览模式（固定呈现“你好”候选条供调试） | `.\weasel-fluent-cpp-qt.exe --demo` |
-| `--verify` | 运行内置 14 项单元与集成全链路测试套件 | `.\weasel-fluent-cpp-qt.exe --verify` |
+| `--verify` | 运行内置 17 项单元与集成全链路测试套件 | `.\weasel-fluent-cpp-qt.exe --verify` |
 | `--benchmark` / `--perf` | 运行平均击键延迟、渲染吞吐与内存分析测试 | `.\weasel-fluent-cpp-qt.exe --benchmark` |
 | `--capture` | 自动捕捉候选窗与设置中心全套实物截图 | `.\weasel-fluent-cpp-qt.exe --capture` |
 | `--theme <mode>` | 强制设置界面主题：`light`, `dark`, 或 `system` | `.\weasel-fluent-cpp-qt.exe --theme dark` |
+
+---
+
+## 架构一览 (Architecture)
+
+```
+   应用进程 (记事本 / Chrome / VS Code …)
+            │  TSF 原生管线（ITfContext / ITfKeyEventSink）
+            ▼
+   ┌──────────────────────────────┐
+   │  weasel-fluent-tsf.dll       │  ← 上游 WeaselTSF（vendor 补丁 0001 去掉 D2D 面板）
+   │  内联预编辑 / 语言栏 / Compartment │
+   └──────────────┬───────────────┘
+                  │  Weasel IPC（命名管道 \\.\pipe\<用户>\WeaselFluentNamedPipe）
+                  ▼
+   ┌──────────────────────────────┐
+   │  weasel-fluent-cpp-qt.exe    │  ← 服务进程
+   │  ├ WeaselEngine              │    上游 RimeWithWeaselHandler（librime）
+   │  ├ FluentUiAdapter           │    weasel::Context/Status → RimeUiState
+   │  └ CandidateWindow (Fluent)  │    唯一的可见候选窗
+   └──────────────┬───────────────┘
+                  │  Weasel IPC
+                  ▼
+   ┌──────────────────────────────┐
+   │  weasel-fluent-cpp-qt.exe    │  ← 设置中心（独立进程）
+   │  WeaselConfigClient          │    部署 / 样式走 IPC，方案与词库走文件系统
+   └──────────────────────────────┘
+```
+
+> 服务端的 `weasel::Context` 由 vendor 补丁 0005 填充 —— 上游的候选列表在 TIP 进程里，
+> 而 Fluent 候选窗在服务端进程里，所以服务端必须自己取一次组合态（详见
+> `docs/superpowers/specs/2026-11-16-weasel-core-merge-modern-ui-design.md` §4.3）。
 
 ---
 

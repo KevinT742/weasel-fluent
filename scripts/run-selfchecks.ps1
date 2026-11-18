@@ -40,6 +40,13 @@ Invoke-Check 'tip-dll' {
 }
 
 # The test suite needs the built executable and the Qt runtime on PATH.
+#
+# ⚠️ **故意不**把 Qt 的 bin 目录加进 PATH：
+# exe 是用 Qt 6.8.2 编译的，而 DLL 搜索默认先看 PATH —— 本机 PATH 里排着
+# STM32CubeProgrammer 的 bin（里面有一套 Qt 6.6.1），一旦从那里捡到同名 DLL，
+# 进程会直接报「无法定位程序输入点 ?setGeometry@QStackedLayout...」。
+# 构建目录自带 Qt 6.8.2 的 DLL（xmake 的 after_build 拷），所以自检就按
+# **用户双击 exe 的真实方式**来跑 —— 这样才能守住这条回归。
 $exeCandidates = @(
     (Join-Path $RepoRoot 'build\Release\weasel-fluent-cpp-qt.exe'),
     (Join-Path $RepoRoot 'build\windows\x64\release\weasel-fluent-cpp-qt.exe')
@@ -50,8 +57,6 @@ if (-not $exe) {
     Write-Host "=== unit-tests ===" -ForegroundColor Cyan
     Write-Host "SKIP: no built executable found (run 'xmake build' first)" -ForegroundColor Yellow
 } else {
-    $qtBin = 'C:\Qt\6.8.2\msvc2022_64\bin'
-    if (Test-Path $qtBin) { $env:PATH = "$qtBin;$env:PATH" }
     Invoke-Check 'unit-tests' {
         & $exe --verify
     }

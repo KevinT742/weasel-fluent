@@ -153,24 +153,61 @@ if (-not (Test-Path $PayloadDir)) {
     exit 1
 }
 $copied = 0
-foreach ($name in @($ExeName, $TsfDllName, "rime.dll", "config.json")) {
-    $src = Join-Path $PayloadDir $name
-    if (Test-Path $src) {
-        Copy-Item $src -Destination (Join-Path $InstallDir $name) -Force
-        $copied++
-        Write-Ok "复制 $name"
-    } else {
-        Write-Host "    [WARN] 缺少 $name" -ForegroundColor Yellow
+$TsfDllInstalled = Join-Path $InstallDir $TsfDllName
+
+# 复制整个 payload 目录树（含 Qt 运行时与 plugins/）。
+#
+# ⚠️ 必须连 Qt 一起复制：exe 启动时用 SetDefaultDllDirectories 把 DLL 搜索
+# 固定成「exe 目录 + System32」，**完全忽略 PATH**（本机 PATH 里排着
+# STM32CubeProgrammer 的 Qt 6.6.1，捡到就会报「无法定位程序输入点」）。
+# 所以 exe 旁边必须有 Qt 6.8.2 的 DLL 与 plugins\。
+function Copy-PayloadFile {
+    param([string]$Src, [string]$DstDir)
+    $name = Split-Path $Src -Leaf
+    $dst = Join-Path $DstDir $name
+    $ok = $false
+    for ($i = 0; $i -lt 5 -and -not $ok; $i++) {
+        try {
+            Copy-Item $Src -Destination $dst -Force -ErrorAction Stop
+            $ok = $true
+        } catch {
+            # 文件正被占用（比如服务还在退出）—— 等一下再试。
+            Start-Sleep -Milliseconds 500
+        }
     }
+    if (-not $ok) {
+        # TIP DLL 会被已经加载了它的应用（ctfmon / 各输入框宿主）占着，
+        # 这种情况下换个带时间戳的文件名装，注册表指向新文件即可 ——
+        # 旧文件等那些应用退出后自然释放。
+        $stem = [IO.Path]::GetFileNameWithoutExtension($name)
+        $ext = [IO.Path]::GetExtension($name)
+        $dst = Join-Path $DstDir ("{0}.{1}{2}" -f $stem, (Get-Date -Format "yyyyMMddHHmmss"), $ext)
+        Copy-Item $Src -Destination $dst -Force
+        Write-Host "    [WARN] $name 正被占用，已改用新文件名安装：$(Split-Path $dst -Leaf)" -ForegroundColor Yellow
+    }
+    return $dst
 }
-$dataSrc = Join-Path $PayloadDir "data"
-if (Test-Path $dataSrc) {
-    $dataDst = Join-Path $InstallDir "data"
-    New-Item -ItemType Directory -Path $dataDst -Force | Out-Null
-    Copy-Item -Path (Join-Path $dataSrc "*") -Destination $dataDst -Recurse -Force
-    Write-Ok "复制 data\"
-} else {
-    Write-Host "    [WARN] 缺少 data\ 目录" -ForegroundColor Yellow
+
+foreach ($item in (Get-ChildItem -Path $PayloadDir -Force)) {
+    if ($item.PSIsContainer) {
+        $sub = Join-Path $InstallDir $item.Name
+        if (-not (Test-Path $sub)) { New-Item -ItemType Directory -Path $sub -Force | Out-Null }
+        foreach ($f in (Get-ChildItem -Path $item.FullName -Recurse -File -Force)) {
+            $rel = $f.FullName.Substring($item.FullName.Length).TrimStart('\')
+            $targetDir = Join-Path $sub (Split-Path $rel -Parent)
+            if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }
+            $placed = Copy-PayloadFile -Src $f.FullName -DstDir $targetDir
+            $copied++
+            if ($item.Name -eq "plugins") { continue }   # 插件太多，不逐个打印
+            if ($f.Name -eq $TsfDllName) { $TsfDllInstalled = $placed }
+        }
+        Write-Ok "复制 $($item.Name)\"
+    } else {
+        $placed = Copy-PayloadFile -Src $item.FullName -DstDir $InstallDir
+        $copied++
+        if ($item.Name -eq $TsfDllName) { $TsfDllInstalled = $placed }
+        Write-Ok "复制 $($item.Name)"
+    }
 }
 if ($copied -eq 0) {
     Write-Host "payload 里一个可执行文件都没找到，安装中止。" -ForegroundColor Red
@@ -187,9 +224,8 @@ $startBat | Out-File -FilePath (Join-Path $InstallDir "start_service.bat") -Enco
 Write-Ok "已写 start_service.bat"
 
 Write-Step "注册 TIP DLL（HKCU 影子注册，免提权）"
-$tsfDll = Join-Path $InstallDir $TsfDllName
-if (Invoke-RegSvr32 -dllPath $tsfDll) {
-    Write-Ok "已注册 $TsfDllName"
+if (Invoke-RegSvr32 -dllPath $TsfDllInstalled) {
+    Write-Ok "已注册 $(Split-Path $TsfDllInstalled -Leaf)"
 } else {
     Write-Host "    [WARN] regsvr32 返回非零；请检查是否有杀毒软件拦截。" -ForegroundColor Yellow
 }
