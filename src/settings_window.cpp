@@ -210,8 +210,14 @@ SettingsCard::SettingsCard(const QString& iconGlyph,
     setAppearance(fluent::layout::Card::Layer);
     setBorderVisible(true);
 
-    m_layout = new QHBoxLayout(this);
-    m_layout->setContentsMargins(20, 12, 20, 12);
+    m_rootLayout = new QVBoxLayout(this);
+    m_rootLayout->setContentsMargins(20, 12, 20, 12);
+    m_rootLayout->setSpacing(10);
+
+    auto* topRow = new QWidget(this);
+    revealWindowMaterial(topRow);
+    m_layout = new QHBoxLayout(topRow);
+    m_layout->setContentsMargins(0, 0, 0, 0);
     m_layout->setSpacing(16);
 
     // Fluent Font Icon (30x30 standard slot)
@@ -246,6 +252,20 @@ SettingsCard::SettingsCard(const QString& iconGlyph,
 
     if (m_trailing) {
         m_layout->addWidget(m_trailing, 0, Qt::AlignRight | Qt::AlignVCenter);
+    }
+
+    m_rootLayout->addWidget(topRow);
+}
+
+void SettingsCard::setBodyWidget(QWidget* bodyWidget) {
+    if (m_body) {
+        m_rootLayout->removeWidget(m_body);
+        m_body->deleteLater();
+        m_body = nullptr;
+    }
+    m_body = bodyWidget;
+    if (m_body) {
+        m_rootLayout->addWidget(m_body);
     }
 }
 
@@ -638,7 +658,10 @@ void HeroPreviewCard::paintEvent(QPaintEvent* event) {
     }
 
     // Subtle Badge at the bottom of canvas
-    QRectF badgeRect(canvasRect.left() + 14.0, canvasRect.bottom() - 26.0, 290.0, 20.0);
+    // 徽章宽度跟着画布走，文字按徽章宽度省略 —— 固定 290px 时窄窗口下
+    // 文字会溢出胶囊，右侧被切掉。
+    const qreal badgeW = qMin(290.0, qMax(140.0, canvasRect.width() - 28.0));
+    QRectF badgeRect(canvasRect.left() + 14.0, canvasRect.bottom() - 26.0, badgeW, 20.0);
     QPainterPath badgeP;
     badgeP.addRoundedRect(badgeRect, 4.0, 4.0);
     p.fillPath(badgeP, isDark ? QColor(0, 0, 0, 80) : QColor(255, 255, 255, 140));
@@ -647,7 +670,9 @@ void HeroPreviewCard::paintEvent(QPaintEvent* event) {
     QFont bf = p.font();
     bf.setPixelSize(10);
     p.setFont(bf);
-    p.drawText(badgeRect, Qt::AlignCenter, QStringLiteral("Windows 11 Mica 材质 · 朙月拼音 (luna_pinyin) · 全拼"));
+    const QString badgeText = QStringLiteral("Windows 11 Mica 材质 · 朙月拼音 (luna_pinyin) · 全拼");
+    p.drawText(badgeRect, Qt::AlignCenter,
+               QFontMetrics(bf).elidedText(badgeText, Qt::ElideRight, qRound(badgeW)));
 
     // ------------------------------------------------------------------------
     // Right: "选择要应用的主题" Quick Preset Tiles (Win11 Settings Style)
@@ -992,6 +1017,30 @@ void SettingsWindow::setupUi() {
         m_navPane->setSelectedRow(0);
     }
     m_pagesHost->setCurrentIndex(0, 1, false);
+
+    applyContentFitsMinimumWidth();
+}
+
+// 页面内容比滚动视口宽时，右侧会被切掉，而且横向滚动条是隐藏的 ——
+// 超出部分既看不见也滚不到（卡片右边距消失、预览图被切一半）。
+// 所以窗口的最小宽度必须容得下最宽的那一页。
+void SettingsWindow::applyContentFitsMinimumWidth() {
+    int contentMin = 0;
+    for (int i = 0; i < m_pagesHost->count(); ++i) {
+        auto* area = qobject_cast<QScrollArea*>(m_pagesHost->pageWidget(i));
+        if (!area) continue;
+        QWidget* content = area->widget();
+        if (!content) continue;
+        contentMin = qMax(contentMin, content->minimumSizeHint().width());
+    }
+    if (contentMin <= 0) return;
+
+    const int navWidth = m_navPane ? m_navPane->width() : 210;
+    // +24：视口比页面区窄一截（滚动条沟槽），留一点余量。
+    const int needed = navWidth + contentMin + 24;
+    if (needed > minimumWidth()) {
+        setMinimumWidth(needed);
+    }
 }
 
 QWidget* SettingsWindow::createNavigationPane() {
@@ -1497,18 +1546,22 @@ QWidget* SettingsWindow::createPersonalizationPage() {
     skinLayout->setContentsMargins(0, 0, 0, 0);
     skinLayout->setSpacing(8);
     skinLayout->addWidget(m_comboSkin);
+    skinLayout->addStretch(1);
     skinLayout->addWidget(m_btnImportSkin);
     skinLayout->addWidget(m_btnExportSkin);
 
     m_lblSkinStatus = new fluent::textfields::Label(QString());
     m_lblSkinStatus->setFluentTypography(Typography::FontRole::Caption);
     m_lblSkinStatus->setTextColorRole(fluent::textfields::Label::TextColorRole::Secondary);
+    m_lblSkinStatus->setWordWrap(true);
 
-    layout->addWidget(new SettingsCard(
+    auto* skinCard = new SettingsCard(
         Typography::Icons::Brush,
         QStringLiteral("自定义皮肤"),
         QStringLiteral("导入 Fluent token 覆盖文件，立即改变候选窗与设置中心的配色"),
-        skinBox, QColor(171, 71, 188), container));
+        nullptr, QColor(171, 71, 188), container);
+    skinCard->setBodyWidget(skinBox);
+    layout->addWidget(skinCard);
     layout->addWidget(m_lblSkinStatus);
 
     // 10. Weasel 状态栏样式（内容层）
@@ -1560,27 +1613,49 @@ QWidget* SettingsWindow::createPersonalizationPage() {
 
     auto* weaselStyleBox = new QWidget();
     revealWindowMaterial(weaselStyleBox);
-    auto* weaselStyleLayout = new QHBoxLayout(weaselStyleBox);
+    auto* weaselStyleLayout = new QVBoxLayout(weaselStyleBox);
     weaselStyleLayout->setContentsMargins(0, 0, 0, 0);
-    weaselStyleLayout->setSpacing(12);
-    weaselStyleLayout->addWidget(m_comboWeaselFontFace);
-    weaselStyleLayout->addWidget(m_sliderWeaselFontPoint);
-    weaselStyleLayout->addWidget(m_lblWeaselFontPoint);
-    weaselStyleLayout->addWidget(m_comboWeaselLayout);
-    weaselStyleLayout->addWidget(m_switchWeaselInlinePreedit);
-    weaselStyleLayout->addWidget(m_btnWeaselStyleRefresh);
-    weaselStyleLayout->addWidget(m_btnWeaselStyleApply);
+    weaselStyleLayout->setSpacing(8);
+
+    // 第一行：字体 + 字号；第二行：横竖排 + 行内预编辑 + 两个动作按钮。
+    // 七个控件挤在一行的话这一组的最小宽度是 842px，整张卡片被撑到 1067px，
+    // 比视口（796px）还宽 —— 横向滚动条是隐藏的，超出部分既看不见也滚不到。
+    auto* weaselFontRow = new QWidget(weaselStyleBox);
+    revealWindowMaterial(weaselFontRow);
+    auto* weaselFontRowLayout = new QHBoxLayout(weaselFontRow);
+    weaselFontRowLayout->setContentsMargins(0, 0, 0, 0);
+    weaselFontRowLayout->setSpacing(12);
+    weaselFontRowLayout->addWidget(m_comboWeaselFontFace);
+    weaselFontRowLayout->addWidget(m_sliderWeaselFontPoint);
+    weaselFontRowLayout->addWidget(m_lblWeaselFontPoint);
+
+    auto* weaselActionRow = new QWidget(weaselStyleBox);
+    revealWindowMaterial(weaselActionRow);
+    auto* weaselActionRowLayout = new QHBoxLayout(weaselActionRow);
+    weaselActionRowLayout->setContentsMargins(0, 0, 0, 0);
+    weaselActionRowLayout->setSpacing(12);
+    weaselActionRowLayout->addWidget(m_comboWeaselLayout);
+    weaselActionRowLayout->addWidget(m_switchWeaselInlinePreedit);
+    weaselActionRowLayout->addStretch(1);
+    weaselActionRowLayout->addWidget(m_btnWeaselStyleRefresh);
+    weaselActionRowLayout->addWidget(m_btnWeaselStyleApply);
+
+    weaselStyleLayout->addWidget(weaselFontRow);
+    weaselStyleLayout->addWidget(weaselActionRow);
 
     m_lblWeaselStyleStatus = new fluent::textfields::Label(QString());
     m_lblWeaselStyleStatus->setFluentTypography(Typography::FontRole::Caption);
     m_lblWeaselStyleStatus->setTextColorRole(fluent::textfields::Label::TextColorRole::Secondary);
+    m_lblWeaselStyleStatus->setWordWrap(true);
 
-    layout->addWidget(new SettingsCard(
+    auto* weaselStyleCard = new SettingsCard(
         Typography::Icons::Edit,
         QStringLiteral("Weasel 状态栏样式"),
         QStringLiteral("引擎侧样式（weasel.yaml）：字体、字号、候选横竖排、行内预编辑 —— "
                        "与上面的 Fluent token 皮肤是两套独立作用域"),
-        weaselStyleBox, QColor(0, 120, 212), container));
+        nullptr, QColor(0, 120, 212), container);
+    weaselStyleCard->setBodyWidget(weaselStyleBox);
+    layout->addWidget(weaselStyleCard);
     layout->addWidget(m_lblWeaselStyleStatus);
 
     refreshWeaselStyle();
@@ -1849,12 +1924,15 @@ QWidget* SettingsWindow::createMaintenancePage() {
                  : QStringLiteral("未连接 Weasel 服务（部署与方案切换不可用）"));
     lblEngineStatus->setFluentTypography(Typography::FontRole::Body);
     lblEngineStatus->setTextColorRole(fluent::textfields::Label::TextColorRole::Primary);
+    lblEngineStatus->setWordWrap(true);
 
-    layout->addWidget(new SettingsCard(
+    auto* engineStatusCard = new SettingsCard(
         Typography::Icons::CheckMark,
         QStringLiteral("Rime 引擎状态"),
         QStringLiteral("当前加载的 Rime 核心 C API 库与会话连接状态"),
-        lblEngineStatus, QColor(16, 124, 65), container));
+        nullptr, QColor(16, 124, 65), container);
+    engineStatusCard->setBodyWidget(lblEngineStatus);
+    layout->addWidget(engineStatusCard);
 
     // 2. User directory
     auto* btnOpenDict = new fluent::basicinput::Button(QStringLiteral("打开目录"));
@@ -1873,6 +1951,7 @@ QWidget* SettingsWindow::createMaintenancePage() {
     m_lblDictList = new fluent::textfields::Label(QStringLiteral("（未导入自定义词库）"));
     m_lblDictList->setFluentTypography(Typography::FontRole::Caption);
     m_lblDictList->setTextColorRole(fluent::textfields::Label::TextColorRole::Secondary);
+    m_lblDictList->setWordWrap(true);
 
     m_btnImportDict = new fluent::basicinput::Button(QStringLiteral("导入词库"));
     m_btnImportDict->setFluentStyle(fluent::basicinput::Button::Accent);
@@ -1970,16 +2049,19 @@ QWidget* SettingsWindow::createMaintenancePage() {
     schemaLayout->setContentsMargins(0, 0, 0, 0);
     schemaLayout->setSpacing(8);
     schemaLayout->addWidget(m_comboSchema);
+    schemaLayout->addStretch(1);
     schemaLayout->addWidget(m_btnRefreshSchemas);
 
     connect(m_comboSchema, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &SettingsWindow::onSchemaChanged);
 
-    layout->addWidget(new SettingsCard(
+    auto* schemaCard = new SettingsCard(
         Typography::Icons::Document,
         QStringLiteral("输入法方案 (Rime Schema)"),
         QStringLiteral("选择当前生效的输入方案，更改后将自动重新部署"),
-        schemaBox, QColor(0, 164, 239), container));
+        nullptr, QColor(0, 164, 239), container);
+    schemaCard->setBodyWidget(schemaBox);
+    layout->addWidget(schemaCard);
 
     // 5. Backup User Dict Card
     auto* backupBox = new QWidget();

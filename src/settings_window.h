@@ -42,6 +42,7 @@ public:
                  QWidget* parent = nullptr);
 
     void setTrailingWidget(QWidget* trailingWidget);
+    void setBodyWidget(QWidget* bodyWidget);
     QString title() const;
     QString subtitle() const;
     void setMatchesSearch(bool matches);
@@ -51,6 +52,8 @@ private:
     fluent::textfields::Label* m_titleLabel = nullptr;
     fluent::textfields::Label* m_subLabel = nullptr;
     QWidget* m_trailing = nullptr;
+    QWidget* m_body = nullptr;
+    QVBoxLayout* m_rootLayout = nullptr;
     QHBoxLayout* m_layout = nullptr;
 };
 
@@ -156,6 +159,7 @@ private:
     void setupTitleBar();
     void applyThemeAndBackdrop();
     void syncControlsFromConfig();
+    void applyContentFitsMinimumWidth();
 
     /// 重新枚举用户 Rime 目录下的输入方案并刷新下拉框。
     void refreshSchemaList();

@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QAbstractScrollArea>
 #include <QCommandLineParser>
 #include <QDir>
 #include <QProcess>
@@ -394,6 +395,64 @@ int runVerificationSuite() {
             return 1;
         }
         std::cout << "  -> PASS: SettingsWindow icon matches the tray icon.\n";
+    }
+
+    // 4c. 每一页的内容宽度都不得超过滚动视口宽度。
+    //
+    // 设置页的横向滚动条是隐藏的：内容一旦比视口宽，超出的部分既看不见
+    // 也滚不到 —— 表现为「窗口显示不全」（卡片右边距消失、预览图被切一半）。
+    // 默认尺寸和最小尺寸各测一遍，守住这个回归。
+    {
+        auto* host = settingsWin.contentHost();
+        int worstSlack = INT_MAX;
+        auto checkPagesFit = [&](const char* stage) -> bool {
+            for (int i = 0; i < host->count(); ++i) {
+                settingsWin.selectNavigationRow(i);
+                for (int k = 0; k < 15; ++k) {
+                    QCoreApplication::processEvents();
+                    QThread::msleep(20);
+                }
+                auto* area = qobject_cast<QScrollArea*>(host->pageWidget(i));
+                if (!area) continue;
+                QWidget* content = area->widget();
+                if (!content) continue;
+                const int vp = area->viewport()->width();
+                if (vp <= 0 || content->width() <= 0) {
+                    std::cerr << "FAIL: settings page " << i << " has no laid-out viewport ("
+                              << vp << "px) at " << stage << "!\n";
+                    return false;
+                }
+                if (content->width() > vp) {
+                    std::cerr << "FAIL: settings page " << i << " content ("
+                              << content->width() << "px) is wider than its viewport ("
+                              << vp << "px) at " << stage << "!\n";
+                    return false;
+                }
+                worstSlack = qMin(worstSlack, vp - content->width());
+            }
+            return true;
+        };
+
+        if (!checkPagesFit("the default window size")) {
+            return 1;
+        }
+
+        settingsWin.resize(settingsWin.minimumWidth(), settingsWin.height());
+        for (int k = 0; k < 10; ++k) {
+            QCoreApplication::processEvents();
+            QThread::msleep(20);
+        }
+        if (!checkPagesFit("the minimum window size")) {
+            return 1;
+        }
+
+        settingsWin.resize(1000, 720);
+        for (int k = 0; k < 5; ++k) {
+            QCoreApplication::processEvents();
+        }
+        std::cout << "  -> PASS: every settings page fits its viewport at the default and the "
+                     "minimum window size (min width " << settingsWin.minimumWidth()
+                  << "px, tightest slack " << worstSlack << "px).\n";
     }
 
     // 5. Verify EmojiPickerWindow
