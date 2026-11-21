@@ -4,6 +4,7 @@
 #include <QDebug>
 #include <QProcess>
 #include <QMetaObject>
+#include <QSet>
 
 #include <rime_api.h>
 // rime_api.h 自带 include guard，此时已是空操作；带上 compat 头是为了让
@@ -26,9 +27,17 @@
 #include <WeaselUtility.h>
 #include <resource.h>
 
+#include "ascii_switch.h"
 #include "fluent_ui_adapter.h"
+#include "key_bindings.h"
 #include "paths.h"
 #include "schema_manager.h"
+
+// ascii_switch 里镜像的 ibus 掩码位必须和上游头文件一致，否则判定会静默失配。
+static_assert(ascii_switch::kShiftMask == ibus::SHIFT_MASK, "Shift 掩码位与上游 ibus::Modifier 不一致");
+static_assert(ascii_switch::kControlMask == ibus::CONTROL_MASK, "Control 掩码位与上游 ibus::Modifier 不一致");
+static_assert(ascii_switch::kAltMask == ibus::ALT_MASK, "Alt 掩码位与上游 ibus::Modifier 不一致");
+static_assert(ascii_switch::kReleaseMask == ibus::RELEASE_MASK, "Release 掩码位与上游 ibus::Modifier 不一致");
 
 namespace {
 
@@ -59,6 +68,131 @@ LRESULT CALLBACK CommandWindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
+/// ibus 掩码里的修饰位全集（比较用）。
+///
+/// 上游 `ConvertKeyEvent` 只可能设出 SHIFT / CONTROL / ALT 三种
+/// （LOCK 是 CapsLock 状态，与切换键无关；SUPER / META 在 Windows 上压根不设）。
+constexpr UINT kIbusModifierBits = ascii_switch::kModifierMask;
+
+/// Qt 键码 → ibus 键码集合。
+///
+/// ibus 的键码约定：小写 ASCII 就是字符本身（XK_c == 0x63），
+/// 而 TIP 的 `ConvertKeyEvent` 在按键不是修饰键时走 `ToUnicodeEx`，
+/// 所以 Shift+A 送上来的是 'A'（0x41）—— 字母两种大小写都要收。
+void appendIbusKeycodes(int qtKey, QSet<UINT>& out) {
+    if (qtKey >= Qt::Key_A && qtKey <= Qt::Key_Z) {
+        const char lower = static_cast<char>(qtKey);
+        out.insert(static_cast<UINT>(lower));
+        out.insert(static_cast<UINT>(lower - 'a' + 'A'));
+        return;
+    }
+    if (qtKey >= 0x20 && qtKey <= 0x7E) {
+        out.insert(static_cast<UINT>(qtKey));   // 空格与标点：ASCII 码即 ibus 码
+        return;
+    }
+    switch (qtKey) {
+    case Qt::Key_Tab:        out.insert(ibus::Tab); break;
+    case Qt::Key_Return:
+    case Qt::Key_Enter:      out.insert(ibus::Return); break;
+    case Qt::Key_Escape:     out.insert(ibus::Escape); break;
+    case Qt::Key_Backspace:  out.insert(ibus::BackSpace); break;
+    case Qt::Key_Delete:     out.insert(ibus::Delete); break;
+    case Qt::Key_Insert:     out.insert(ibus::Insert); break;
+    case Qt::Key_Home:       out.insert(ibus::Home); break;
+    case Qt::Key_End:        out.insert(ibus::End); break;
+    case Qt::Key_Left:       out.insert(ibus::Left); break;
+    case Qt::Key_Up:         out.insert(ibus::Up); break;
+    case Qt::Key_Right:      out.insert(ibus::Right); break;
+    case Qt::Key_Down:       out.insert(ibus::Down); break;
+    case Qt::Key_PageUp:     out.insert(ibus::Page_Up); break;
+    case Qt::Key_PageDown:   out.insert(ibus::Page_Down); break;
+    case Qt::Key_F1:         out.insert(ibus::F1); break;
+    case Qt::Key_F2:         out.insert(ibus::F2); break;
+    case Qt::Key_F3:         out.insert(ibus::F3); break;
+    case Qt::Key_F4:         out.insert(ibus::F4); break;
+    case Qt::Key_F5:         out.insert(ibus::F5); break;
+    case Qt::Key_F6:         out.insert(ibus::F6); break;
+    case Qt::Key_F7:         out.insert(ibus::F7); break;
+    case Qt::Key_F8:         out.insert(ibus::F8); break;
+    case Qt::Key_F9:         out.insert(ibus::F9); break;
+    case Qt::Key_F10:        out.insert(ibus::F10); break;
+    case Qt::Key_F11:        out.insert(ibus::F11); break;
+    case Qt::Key_F12:        out.insert(ibus::F12); break;
+    default: break;
+    }
+}
+
+/// 修饰键规格 → ibus 键码 + 期望修饰位。
+///
+/// "Shift" 两侧都收；"Shift_L" / "Shift_R" 只收一侧。
+/// 这套左右之分是中文输入法的老规矩：左 Shift 切中英，右 Shift 另有其用。
+bool parseModifierSwitchSpec(const QString& base, bool hasSide, bool isLeft,
+                              ascii_switch::Spec& out) {
+    const QString b = base.toLower();
+    UINT ownMask = 0;
+    UINT leftCode = 0;
+    UINT rightCode = 0;
+    if (b == QLatin1String("shift")) {
+        ownMask = ibus::SHIFT_MASK;   leftCode = ibus::Shift_L;   rightCode = ibus::Shift_R;
+    } else if (b == QLatin1String("ctrl")) {
+        ownMask = ibus::CONTROL_MASK; leftCode = ibus::Control_L; rightCode = ibus::Control_R;
+    } else if (b == QLatin1String("alt")) {
+        ownMask = ibus::ALT_MASK;     leftCode = ibus::Alt_L;     rightCode = ibus::Alt_R;
+    } else if (b == QLatin1String("win")) {
+        // TIP 的 TranslateKeycode 把 VK_LWIN / VK_RWIN 译成 Meta_L / Meta_R。
+        ownMask = ibus::META_MASK;    leftCode = ibus::Meta_L;    rightCode = ibus::Meta_R;
+    } else {
+        return false;
+    }
+    out.expectedMods = ownMask;
+    out.isModifier = true;
+    if (hasSide) {
+        out.keycodes.insert(isLeft ? leftCode : rightCode);
+    } else {
+        out.keycodes.insert(leftCode);
+        out.keycodes.insert(rightCode);
+    }
+    out.valid = true;
+    return true;
+}
+
+/// 规格串 → 中英文切换键的匹配条件。
+ascii_switch::Spec parseAsciiSwitchSpec(const QString& spec) {
+    ascii_switch::Spec out;
+    const QString s = spec.trimmed();
+    if (s.isEmpty()) {
+        return out;
+    }
+    // 纯修饰键规格（"Shift" / "Shift_L" / "Ctrl_R" …）。
+    if (!s.contains(QLatin1Char('+'))) {
+        QString base;
+        bool isLeft = false;
+        const bool hasSide = KeyActions::splitSideSuffix(s, &base, &isLeft);
+        if (parseModifierSwitchSpec(base, hasSide, isLeft, out)) {
+            return out;
+        }
+    }
+    // 一般组合键（"Ctrl+Shift+A" 之类）。
+    int qtKey = 0;
+    Qt::KeyboardModifiers mods = Qt::NoModifier;
+    if (!KeyBindings::parseSpec(s, &qtKey, &mods)) {
+        return out;
+    }
+    QSet<UINT> keycodes;
+    appendIbusKeycodes(qtKey, keycodes);
+    if (keycodes.isEmpty()) {
+        return out;
+    }
+    for (UINT code : keycodes) {
+        out.keycodes.insert(code);
+    }
+    if (mods & Qt::ShiftModifier)   out.expectedMods |= ibus::SHIFT_MASK;
+    if (mods & Qt::ControlModifier) out.expectedMods |= ibus::CONTROL_MASK;
+    if (mods & Qt::AltModifier)     out.expectedMods |= ibus::ALT_MASK;
+    out.valid = true;
+    return out;
+}
+
 /// 记录「当前活动会话」的 handler。
 ///
 /// 上游 `RimeWithWeaselHandler::m_active_session` 是私有的，而我们的候选窗
@@ -73,7 +207,33 @@ public:
     BOOL ProcessKeyEvent(weasel::KeyEvent keyEvent, WeaselSessionId ipc_id,
                          EatLine eat) override {
         m_lastSessionId.store(ipc_id);
-        return RimeWithWeaselHandler::ProcessKeyEvent(keyEvent, ipc_id, eat);
+
+        // ── 中英文切换键 ────────────────────────────────────────────────
+        //
+        // 判定必须在 Rime 处理**之前**做：要读「按下瞬间」的 ascii_mode，
+        // 因为 ascii_composer 的 inline_ascii（用户方案里 Shift_L 就是它）
+        // 会在按住 Shift 期间把 ascii_mode 临时置成 true。
+        //
+        // 但**落地**必须在 Rime 处理**之后**：inline_ascii 在抬手时会把
+        // ascii_mode 恢复回去，不后置就会被它覆盖掉。
+        //
+        // 按键**不吞掉** —— 吞掉的话 Shift+A 的大小写就没了。
+        refreshSwitchSpec();
+        bool desired = false;
+        const bool toggle = m_switchDetector.handle(
+            keyEvent.keycode,
+            (keyEvent.mask & ibus::RELEASE_MASK) == 0,
+            keyEvent.mask & kIbusModifierBits,
+            m_engine ? m_engine->isAsciiMode() : false,
+            &desired);
+
+        BOOL eaten = RimeWithWeaselHandler::ProcessKeyEvent(keyEvent, ipc_id, eat);
+
+        if (toggle) {
+            // 上游的 SetOption 会顺手刷新 UI（状态与语言栏图标）。
+            SetOption(ipc_id, "ascii_mode", desired);
+        }
+        return eaten;
     }
 
     void UpdateInputPosition(RECT const& rc, WeaselSessionId ipc_id) override {
@@ -91,8 +251,20 @@ public:
     WeaselSessionId lastSessionId() const { return m_lastSessionId.load(); }
 
 private:
+    /// 配置变了才重新解析切换键规格（每个按键都解析一次太浪费）。
+    void refreshSwitchSpec() {
+        const QString spec = KeyActions::effectiveAsciiSwitchSpec();
+        if (spec == m_switchSpecText) {
+            return;
+        }
+        m_switchSpecText = spec;
+        m_switchDetector.setSpec(parseAsciiSwitchSpec(spec));
+    }
+
     std::atomic<WeaselSessionId> m_lastSessionId{0};
     WeaselEngine* m_engine = nullptr;
+    ascii_switch::Detector m_switchDetector;
+    QString m_switchSpecText;
 };
 
 } // namespace

@@ -242,7 +242,63 @@ if ($sync -eq 1) {
     $failures++
 }
 
-# ── 9. 收尾：清组合态、结束会话 ────────────────────────────────────────────
+# ── 9. 中英文切换键：模拟 TIP 发来的 Shift 按下 / 抬起 ─────────────────────
+#
+# 线上格式与 TIP 发的一模一样：WEASEL_IPC_PROCESS_KEY_EVENT 的 wParam 就是
+# weasel::KeyEvent 那 4 字节 {keycode:16, mask:16}（小端 ⇒ keycode 在低位、
+# mask 在高位）。常量取自 vendor 的 include/KeyEvent.h：
+#   ibus::Shift_L     = 0xFFE1
+#   ibus::SHIFT_MASK  = 1 << 0
+#   ibus::RELEASE_MASK= 1 << 14
+# 「按下」= keycode | (SHIFT_MASK << 16)，「抬起」= keycode | (RELEASE_MASK << 16)。
+#
+# 判定规则：修饰键要「按下 → 抬手，期间没有别的键」才算一次单击，
+# 所以这里必须把两半都发过去；Shift+A 那种「拿它当修饰键」的用法不会切。
+$VKEY_SHIFT_L = 0xFFE1
+$MASK_SHIFT   = 1
+$MASK_RELEASE = 1 -shl 14
+$shiftDown = [uint32]($VKEY_SHIFT_L -bor ($MASK_SHIFT -shl 16))
+$shiftUp   = [uint32]($VKEY_SHIFT_L -bor ($MASK_RELEASE -shl 16))
+
+# 先回到中文态。
+Send-TrayCommand -MenuId $ID_WEASELTRAY_DISABLE_ASCII -SessionId $sessionId | Out-Null
+$base = Read-AsciiMode -Session $sessionId
+Send-Ipc -Msg $WEASEL_IPC_PROCESS_KEY_EVENT -wParam $shiftDown -lParam $sessionId | Out-Null
+Send-Ipc -Msg $WEASEL_IPC_PROCESS_KEY_EVENT -wParam $shiftUp   -lParam $sessionId | Out-Null
+$afterClick = Read-AsciiMode -Session $sessionId
+if ($base -eq 0 -and $afterClick -eq 1) {
+    Write-Host "PASS: a clean Shift click switched the engine to English (ascii_mode 0 -> 1)" -ForegroundColor Green
+} else {
+    Write-Host ("FAIL: a clean Shift click did not switch the ascii mode (base={0}, after={1}, expected 0/1)" -f $base, $afterClick) -ForegroundColor Red
+    $failures++
+}
+
+# 再点一次 ⇒ 切回中文。
+Send-Ipc -Msg $WEASEL_IPC_PROCESS_KEY_EVENT -wParam $shiftDown -lParam $sessionId | Out-Null
+Send-Ipc -Msg $WEASEL_IPC_PROCESS_KEY_EVENT -wParam $shiftUp   -lParam $sessionId | Out-Null
+$afterSecond = Read-AsciiMode -Session $sessionId
+if ($afterSecond -eq 0) {
+    Write-Host "PASS: a second Shift click switched back to Chinese (ascii_mode 1 -> 0)" -ForegroundColor Green
+} else {
+    Write-Host ("FAIL: a second Shift click did not switch back (ascii_mode={0}, expected 0)" -f $afterSecond) -ForegroundColor Red
+    $failures++
+}
+
+# Shift+A：切换键被当修饰键用了 ⇒ 不该切。
+$beforeCombo = Read-AsciiMode -Session $sessionId
+Send-Ipc -Msg $WEASEL_IPC_PROCESS_KEY_EVENT -wParam $shiftDown -lParam $sessionId | Out-Null
+Send-Ipc -Msg $WEASEL_IPC_PROCESS_KEY_EVENT -wParam $VKEY_A -lParam $sessionId | Out-Null
+Send-Ipc -Msg $WEASEL_IPC_PROCESS_KEY_EVENT -wParam ([uint32]($VKEY_A -bor ($MASK_RELEASE -shl 16))) -lParam $sessionId | Out-Null
+Send-Ipc -Msg $WEASEL_IPC_PROCESS_KEY_EVENT -wParam $shiftUp   -lParam $sessionId | Out-Null
+$afterCombo = Read-AsciiMode -Session $sessionId
+if ($beforeCombo -eq $afterCombo) {
+    Write-Host "PASS: Shift+A did NOT switch the ascii mode (it stays a case modifier)" -ForegroundColor Green
+} else {
+    Write-Host ("FAIL: Shift+A wrongly switched the ascii mode ({0} -> {1})" -f $beforeCombo, $afterCombo) -ForegroundColor Red
+    $failures++
+}
+
+# ── 10. 收尾：清组合态、结束会话 ───────────────────────────────────────────
 Send-Ipc -Msg $WEASEL_IPC_CLEAR_COMPOSITION -wParam 0 -lParam $sessionId | Out-Null
 Send-Ipc -Msg $WEASEL_IPC_END_SESSION -wParam 0 -lParam $sessionId | Out-Null
 

@@ -20,7 +20,7 @@ namespace {
 /// 因此旧配置的用户行为不会改变。
 QHash<QString, QString> defaultBindings() {
     QHash<QString, QString> h;
-    h.insert(QString::fromLatin1(KeyActions::ToggleAscii),    QStringLiteral("Shift"));
+    h.insert(QString::fromLatin1(KeyActions::ToggleAscii),    QStringLiteral("Shift_L"));
     h.insert(QString::fromLatin1(KeyActions::Commit),         QStringLiteral("Space"));
     h.insert(QString::fromLatin1(KeyActions::PagePrev),       QStringLiteral("Comma"));
     h.insert(QString::fromLatin1(KeyActions::PageNext),       QStringLiteral("Period"));
@@ -28,6 +28,38 @@ QHash<QString, QString> defaultBindings() {
     h.insert(QString::fromLatin1(KeyActions::EmojiPanel),     QString());
     h.insert(QString::fromLatin1(KeyActions::ExtensionPanel), QString());
     return h;
+}
+
+/// 纯修饰键规格（"Shift" / "Shift_L" / "Ctrl_R" …）的主键码。
+///
+/// 「中英文切换」默认就绑在 Shift 上 —— 这种规格只有修饰键、没有主键，
+/// 解析时必须把它当成主键本身，否则 specMatches 永远不成立
+/// （旧实现把 "Shift" 整个吃掉当修饰位，主键码留空 → 解析失败）。
+int modifierKeyCode(const QString& name) {
+    const QString n = name.trimmed().toLower();
+    if (n == QLatin1String("shift")) return Qt::Key_Shift;
+    if (n == QLatin1String("ctrl"))  return Qt::Key_Control;
+    if (n == QLatin1String("alt"))   return Qt::Key_Alt;
+    if (n == QLatin1String("win"))   return Qt::Key_Meta;
+    return 0;
+}
+
+/// 去掉左右侧后缀（"Shift_L" → "Shift"），返回 true 表示原来带后缀。
+bool splitSideSuffixImpl(const QString& name, QString* base, bool* isLeft) {
+    QString n = name.trimmed();
+    if (n.endsWith(QLatin1String("_L"), Qt::CaseInsensitive)) {
+        *base = n.left(n.size() - 2);
+        *isLeft = true;
+        return true;
+    }
+    if (n.endsWith(QLatin1String("_R"), Qt::CaseInsensitive)) {
+        *base = n.left(n.size() - 2);
+        *isLeft = false;
+        return true;
+    }
+    *base = n;
+    *isLeft = false;
+    return false;
 }
 
 /// 可打印键 -> 规格名。
@@ -148,6 +180,18 @@ QString KeyBindings::binding(const QString& action) const {
     return defaultBindings().value(action);
 }
 
+bool KeyBindings::hasExplicitBinding(const QString& action) const {
+    return m_bindings.contains(action);
+}
+
+QString KeyBindings::explicitBinding(const QString& action) const {
+    return m_bindings.value(action);
+}
+
+QString KeyBindings::defaultBinding(const QString& action) const {
+    return defaultBindings().value(action);
+}
+
 void KeyBindings::setBinding(const QString& action, const QString& spec) {
     m_bindings.insert(action, spec);
     AppConfig::instance().setKeyBindings(m_bindings);
@@ -184,14 +228,29 @@ bool KeyBindings::parseSpec(const QString& spec, int* key, Qt::KeyboardModifiers
     const QStringList parts = spec.split(QLatin1Char('+'), Qt::SkipEmptyParts);
     Qt::KeyboardModifiers m = Qt::NoModifier;
     int k = 0;
+    QString modifierOnly;   ///< 规格里唯一的那个修饰键（"Shift" / "Shift_L" …）
     for (const QString& raw : parts) {
         const QString p = raw.trimmed();
         const QString lower = p.toLower();
-        if (lower == QLatin1String("ctrl"))  { m |= Qt::ControlModifier; continue; }
-        if (lower == QLatin1String("alt"))   { m |= Qt::AltModifier; continue; }
-        if (lower == QLatin1String("shift")) { m |= Qt::ShiftModifier; continue; }
-        if (lower == QLatin1String("win"))   { m |= Qt::MetaModifier; continue; }
+        // 左右侧后缀只是标记，键本身还是那个修饰键。
+        QString base;
+        bool isLeft = false;
+        KeyActions::splitSideSuffix(p, &base, &isLeft);
+        const QString baseLower = base.toLower();
+        if (baseLower == QLatin1String("ctrl"))  { m |= Qt::ControlModifier; modifierOnly = base; continue; }
+        if (baseLower == QLatin1String("alt"))   { m |= Qt::AltModifier; modifierOnly = base; continue; }
+        if (baseLower == QLatin1String("shift")) { m |= Qt::ShiftModifier; modifierOnly = base; continue; }
+        if (baseLower == QLatin1String("win"))   { m |= Qt::MetaModifier; modifierOnly = base; continue; }
         k = keyFromName(p);
+    }
+    if (k == 0) {
+        // 规格里只有修饰键（"Shift" / "Shift_R" …）：它本身就是主键。
+        // 修饰位**保留**在 m 里 —— 按下 Shift 时事件带的修饰位正是 Shift，
+        // specMatches 才能把它判成命中。
+        if (parts.size() != 1 || modifierOnly.isEmpty()) {
+            return false;
+        }
+        k = modifierKeyCode(modifierOnly);
     }
     if (k == 0) {
         return false;
@@ -215,3 +274,38 @@ bool KeyBindings::specMatches(const QString& spec, int key, Qt::KeyboardModifier
         Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier | Qt::MetaModifier;
     return (mods & relevant) == (specMods & relevant);
 }
+
+namespace KeyActions {
+
+bool splitSideSuffix(const QString& name, QString* base, bool* isLeft) {
+    return splitSideSuffixImpl(name, base, isLeft);
+}
+
+QString asciiSwitchSpecFromLegacy(const QString& legacy) {
+    const QString l = legacy.trimmed();
+    if (l.compare(QLatin1String("RightShift"), Qt::CaseInsensitive) == 0) {
+        return QStringLiteral("Shift_R");
+    }
+    if (l.compare(QLatin1String("Ctrl"), Qt::CaseInsensitive) == 0) {
+        return QStringLiteral("Ctrl");
+    }
+    if (l.compare(QLatin1String("None"), Qt::CaseInsensitive) == 0) {
+        return QString();
+    }
+    return QStringLiteral("Shift_L");
+}
+
+QString effectiveAsciiSwitchSpec() {
+    const QString action = QString::fromLatin1(ToggleAscii);
+    // 显式绑定优先 —— 设成空串表示「禁用」，不能退回旧字段。
+    if (KeyBindings::instance().hasExplicitBinding(action)) {
+        return KeyBindings::instance().explicitBinding(action).trimmed();
+    }
+    const QString legacy = AppConfig::instance().switchKey().trimmed();
+    if (legacy.isEmpty()) {
+        return KeyBindings::instance().defaultBinding(action);
+    }
+    return asciiSwitchSpecFromLegacy(legacy);
+}
+
+} // namespace KeyActions

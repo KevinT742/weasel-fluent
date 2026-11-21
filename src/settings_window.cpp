@@ -43,6 +43,38 @@ namespace {
 
 constexpr qreal kFixedCornerRadius = 6.0;
 
+/// 「中英文快捷切换按键」下拉框的下标 ↔ 规格串。
+///
+/// 规格串与 key_bindings 表共用（"Shift_L" / "Shift_R" / "Ctrl" / 空串），
+/// 这样「中英文快捷切换按键」下拉框与「自定义快捷键」表里的
+/// 「中英文切换」那一行永远是同一个设置，不会各说各话。
+int switchKeyIndexForSpec(const QString& spec) {
+    const QString s = spec.trimmed().toLower();
+    if (s.isEmpty() || s == QLatin1String("none")) return 3;
+    if (s == QLatin1String("shift_r") || s == QLatin1String("rightshift")) return 1;
+    if (s.startsWith(QLatin1String("ctrl"))) return 2;
+    return 0;   // Shift / Shift_L
+}
+
+QString switchKeySpecForIndex(int index) {
+    switch (index) {
+    case 1:  return QStringLiteral("Shift_R");
+    case 2:  return QStringLiteral("Ctrl");
+    case 3:  return QString();
+    default: return QStringLiteral("Shift_L");
+    }
+}
+
+/// 旧 config.json 的 switch_key 字段（保留一份给外部工具读）。
+QString legacySwitchKeyForIndex(int index) {
+    switch (index) {
+    case 1:  return QStringLiteral("RightShift");
+    case 2:  return QStringLiteral("Ctrl");
+    case 3:  return QStringLiteral("None");
+    default: return QStringLiteral("Shift");
+    }
+}
+
 QPixmap createMicaGrainTile(qreal dpr) {
     const int ratioKey = qRound((dpr > 0.0 ? dpr : 1.0) * 4.0);
     const qreal quantizedRatio = ratioKey / 4.0;
@@ -1793,11 +1825,7 @@ QWidget* SettingsWindow::createInputPage() {
     m_comboSwitchKey->addItem(QStringLiteral("Ctrl 键 (Control)"));
     m_comboSwitchKey->addItem(QStringLiteral("无 (禁用单键切换)"));
 
-    QString curSwitch = cfg.switchKey();
-    if (curSwitch == QStringLiteral("RightShift")) m_comboSwitchKey->setCurrentIndex(1);
-    else if (curSwitch == QStringLiteral("Ctrl")) m_comboSwitchKey->setCurrentIndex(2);
-    else if (curSwitch == QStringLiteral("None")) m_comboSwitchKey->setCurrentIndex(3);
-    else m_comboSwitchKey->setCurrentIndex(0);
+    m_comboSwitchKey->setCurrentIndex(switchKeyIndexForSpec(KeyActions::effectiveAsciiSwitchSpec()));
 
     connect(m_comboSwitchKey, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &SettingsWindow::onSwitchKeyChanged);
@@ -2263,11 +2291,15 @@ void SettingsWindow::onFontFamilyChanged(int index) {
 }
 
 void SettingsWindow::onSwitchKeyChanged(int index) {
-    QString k = QStringLiteral("Shift");
-    if (index == 1) k = QStringLiteral("RightShift");
-    else if (index == 2) k = QStringLiteral("Ctrl");
-    else if (index == 3) k = QStringLiteral("None");
-    AppConfig::instance().setSwitchKey(k);
+    const QString spec = switchKeySpecForIndex(index);
+    // 旧字段保留一份（外部工具 / 旧配置可能读它）。
+    AppConfig::instance().setSwitchKey(legacySwitchKeyForIndex(index));
+    // 真正生效的是 key_bindings 表里的 toggle_ascii —— 与「自定义快捷键」
+    // 表里的「中英文切换」那一行共用同一个数据源。
+    KeyBindings::instance().setBinding(QString::fromLatin1(KeyActions::ToggleAscii), spec);
+    if (auto* lbl = m_bindingLabels.value(QString::fromLatin1(KeyActions::ToggleAscii), nullptr)) {
+        lbl->setText(spec.isEmpty() ? QStringLiteral("（未绑定）") : spec);
+    }
 }
 
 void SettingsWindow::onPageKeysChanged(int index) {
@@ -2538,11 +2570,8 @@ void SettingsWindow::syncControlsFromConfig() {
         m_switchSpaceCommit->setIsOn(cfg.spaceCommitFirst());
     }
     if (m_comboSwitchKey) {
-        QString s = cfg.switchKey();
-        if (s == QStringLiteral("RightShift")) m_comboSwitchKey->setCurrentIndex(1);
-        else if (s == QStringLiteral("Ctrl")) m_comboSwitchKey->setCurrentIndex(2);
-        else if (s == QStringLiteral("None")) m_comboSwitchKey->setCurrentIndex(3);
-        else m_comboSwitchKey->setCurrentIndex(0);
+        m_comboSwitchKey->setCurrentIndex(
+            switchKeyIndexForSpec(KeyActions::effectiveAsciiSwitchSpec()));
     }
     if (m_comboPageKeys) {
         QString p = cfg.pageKeys();

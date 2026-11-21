@@ -24,6 +24,7 @@
 #endif
 #include "components/foundation/UserTheme.h"
 #include "design/Typography.h"
+#include "ascii_switch.h"
 #include "config.h"
 #include "dictionary_manager.h"
 #include "fluent_ui_adapter.h"
@@ -203,6 +204,95 @@ int runWeaselRuntimeProbe() {
     }
     weasel.setFullShape(false);
     std::cout << "  -> Mode toggles (ascii / simplified / full shape) OK\n";
+
+    // ── 中英文切换键：注入真实按键 → 真实 Rime 会话 ───────────────────────
+    //
+    // 这里断言的是**引擎里的真实行为**，不是纯逻辑：
+    //   · 单击左 Shift → ascii_mode 翻转；
+    //   · Shift+A → 不翻转（Shift 仍然是大写用途）。
+    //
+    // ⚠️ 方案里 ascii_composer 的 switch_key 默认是 Shift_L: inline_ascii ——
+    // 按住 Shift 期间它会把 ascii_mode 临时置成 true，抬手时又恢复回去。
+    // 所以判定必须记「按下瞬间」的状态，落地必须放在 Rime 处理之后。
+    {
+        // 等命令队列结算：切全角再切回来。命令队列是 FIFO，回切生效即说明
+        // 前面排的按键都处理完了。
+        auto settle = [&weasel]() {
+            weasel.setFullShape(true);
+            const bool on = waitForState(weasel, [](const RimeUiState& s) { return s.fullShape; });
+            weasel.setFullShape(false);
+            const bool off = waitForState(weasel, [](const RimeUiState& s) { return !s.fullShape; });
+            return on && off;
+        };
+
+        weasel.setAsciiMode(false);
+        if (!settle()) {
+            std::cerr << "FAIL: the ascii switch probe never settled\n";
+            return 1;
+        }
+        if (weasel.isAsciiMode()) {
+            std::cerr << "FAIL: could not return to the chinese state\n";
+            return 1;
+        }
+
+        // 单击左 Shift：按下 → 抬手。
+        //
+        // 先只发「按下」并把中间状态打出来：方案里 ascii_composer 的
+        // switch_key 是 Shift_L: inline_ascii —— 按住 Shift 期间它会把
+        // ascii_mode 临时置成 true，抬手时又恢复回去。所以我们的判定必须
+        // 记「按下瞬间」的状态，落地必须放在 Rime 处理之后。
+        weasel.processKey(ibus::Shift_L, ibus::SHIFT_MASK);
+        if (!settle()) {
+            std::cerr << "FAIL: the ascii switch probe never settled\n";
+            return 1;
+        }
+        std::cout << "  -> while the Shift is held, ascii_mode = "
+                  << (weasel.isAsciiMode() ? 1 : 0)
+                  << " (inline_ascii may hold it temporarily)\n";
+        weasel.processKey(ibus::Shift_L, ibus::RELEASE_MASK);
+        if (!settle()) {
+            std::cerr << "FAIL: the ascii switch probe never settled\n";
+            return 1;
+        }
+        if (!weasel.isAsciiMode()) {
+            std::cerr << "FAIL: a clean Shift click did not switch the ascii mode\n";
+            return 1;
+        }
+
+        // 再单击一次：切回中文。
+        weasel.processKey(ibus::Shift_L, ibus::SHIFT_MASK);
+        weasel.processKey(ibus::Shift_L, ibus::RELEASE_MASK);
+        if (!settle()) {
+            std::cerr << "FAIL: the ascii switch probe never settled\n";
+            return 1;
+        }
+        if (weasel.isAsciiMode()) {
+            std::cerr << "FAIL: a second Shift click did not switch back to chinese\n";
+            return 1;
+        }
+
+        // Shift+A：切换键被当修饰键用了 ⇒ 不该切。
+        weasel.processKey(ibus::Shift_L, ibus::SHIFT_MASK);
+        weasel.processKey('A', ibus::SHIFT_MASK);
+        weasel.processKey('A', ibus::SHIFT_MASK | ibus::RELEASE_MASK);
+        weasel.processKey(ibus::Shift_L, ibus::RELEASE_MASK);
+        if (!settle()) {
+            std::cerr << "FAIL: the ascii switch probe never settled\n";
+            return 1;
+        }
+        if (weasel.isAsciiMode()) {
+            std::cerr << "FAIL: Shift+A must not switch the ascii mode\n";
+            return 1;
+        }
+        // 'A' 在中文态下会留下一个组合态，清掉 —— 后面还要拿状态做桥接断言。
+        weasel.processKey(ibus::Escape, 0);
+        if (!settle()) {
+            std::cerr << "FAIL: the ascii switch probe never settled\n";
+            return 1;
+        }
+        std::cout << "  -> PASS: the ascii switch key on the real engine"
+                     " (a clean click toggles, Shift+A does not).\n";
+    }
 
     // 全量部署（隔离目录里跑真实的 Rime 维护）。
     QString deployError;
@@ -789,6 +879,200 @@ int runVerificationSuite() {
             return 1;
         }
         std::cout << "  -> PASS: key spec parse/format/match OK.\n";
+    }
+
+    // 14b. 中英文切换键：纯修饰键规格必须能解析并命中。
+    //
+    // 「中英文切换」默认绑在 Shift 上 —— 这种规格只有修饰键、没有主键。
+    // 旧实现把 "Shift" 整个当修饰位吃掉，主键码留空 → parseSpec 失败 →
+    // 任何按键都匹配不上，中英文切换永远是失效的。
+    std::cout << "[TEST 14b] Testing the bare-modifier ascii switch binding...\n";
+    {
+        int key = 0;
+        Qt::KeyboardModifiers mods = Qt::NoModifier;
+        if (!KeyBindings::parseSpec(QStringLiteral("Shift"), &key, &mods)) {
+            std::cerr << "FAIL: parseSpec failed for the bare 'Shift' spec\n";
+            return 1;
+        }
+        if (key != Qt::Key_Shift || mods != Qt::ShiftModifier) {
+            std::cerr << "FAIL: bare 'Shift' spec parsed as key=" << key
+                      << " mods=" << int(mods) << "\n";
+            return 1;
+        }
+        if (!KeyBindings::specMatches(QStringLiteral("Shift"), Qt::Key_Shift,
+                                      Qt::ShiftModifier)) {
+            std::cerr << "FAIL: the bare 'Shift' spec does not match a Shift press\n";
+            return 1;
+        }
+        if (KeyBindings::specMatches(QStringLiteral("Shift"), Qt::Key_A,
+                                     Qt::ShiftModifier)) {
+            std::cerr << "FAIL: the bare 'Shift' spec wrongly matched a letter key\n";
+            return 1;
+        }
+        // 左右侧后缀：Qt 层不区分左右，但必须能解析。
+        if (!KeyBindings::parseSpec(QStringLiteral("Shift_R"), &key, &mods) ||
+            key != Qt::Key_Shift) {
+            std::cerr << "FAIL: parseSpec failed for 'Shift_R'\n";
+            return 1;
+        }
+        // 旧 switch_key 字段 → 规格串。
+        if (KeyActions::asciiSwitchSpecFromLegacy(QStringLiteral("RightShift")) !=
+            QStringLiteral("Shift_R")) {
+            std::cerr << "FAIL: legacy 'RightShift' did not map to Shift_R\n";
+            return 1;
+        }
+        if (!KeyActions::asciiSwitchSpecFromLegacy(QStringLiteral("None")).isEmpty()) {
+            std::cerr << "FAIL: legacy 'None' must disable the switch key\n";
+            return 1;
+        }
+        std::cout << "  -> PASS: the bare-modifier ascii switch binding parses and matches"
+                     " (effective spec: "
+                  << KeyActions::effectiveAsciiSwitchSpec().toStdString() << ").\n";
+    }
+
+    // 14c. 切换键的「单击」判定（纯逻辑，直接喂按键事件）
+    //
+    // 规则：修饰键要「按下 → 抬手，期间没有别的键」才算一次单击。
+    // Shift+A 仍然是大写 A，不能误切中英。
+    std::cout << "[TEST 14c] Testing the ascii switch click detection...\n";
+    {
+        using ascii_switch::Detector;
+        using ascii_switch::Spec;
+
+        const quint32 shiftL = ibus::Shift_L;
+        const quint32 shiftR = ibus::Shift_R;
+        const quint32 letterA = 'A';
+
+        Spec leftShift;
+        leftShift.keycodes = {shiftL};
+        leftShift.expectedMods = ascii_switch::kShiftMask;
+        leftShift.isModifier = true;
+        leftShift.valid = true;
+
+        // ① 单击左 Shift ⇒ 切一次，目标状态 = 按下瞬间的取反。
+        {
+            Detector d;
+            d.setSpec(leftShift);
+            bool desired = false;
+            if (d.handle(shiftL, true, ascii_switch::kShiftMask, false, &desired)) {
+                std::cerr << "FAIL: a modifier press must not toggle before the release\n";
+                return 1;
+            }
+            if (!d.handle(shiftL, false, 0, true, &desired)) {
+                std::cerr << "FAIL: a clean Shift click did not toggle\n";
+                return 1;
+            }
+            if (!desired) {
+                std::cerr << "FAIL: a clean Shift click did not target the opposite state\n";
+                return 1;
+            }
+        }
+
+        // ② Shift+A：切换键被当修饰键用了 ⇒ 不切。
+        {
+            Detector d;
+            d.setSpec(leftShift);
+            bool desired = false;
+            d.handle(shiftL, true, ascii_switch::kShiftMask, false, &desired);
+            d.handle(letterA, true, ascii_switch::kShiftMask, false, &desired);
+            d.handle(letterA, false, ascii_switch::kShiftMask, false, &desired);
+            if (d.handle(shiftL, false, 0, false, &desired)) {
+                std::cerr << "FAIL: Shift+A must not toggle the ascii mode\n";
+                return 1;
+            }
+        }
+
+        // ③ 规格是 Shift_L 时，右 Shift 不该触发。
+        {
+            Detector d;
+            d.setSpec(leftShift);
+            bool desired = false;
+            d.handle(shiftR, true, ascii_switch::kShiftMask, false, &desired);
+            if (d.handle(shiftR, false, 0, false, &desired)) {
+                std::cerr << "FAIL: the right Shift triggered a 'Shift_L' binding\n";
+                return 1;
+            }
+        }
+
+        // ④ 规格是 Shift（两侧都算）时，右 Shift 该触发。
+        {
+            Spec bothSides = leftShift;
+            bothSides.keycodes = {shiftL, shiftR};
+            Detector d;
+            d.setSpec(bothSides);
+            bool desired = false;
+            d.handle(shiftR, true, ascii_switch::kShiftMask, false, &desired);
+            if (!d.handle(shiftR, false, 0, false, &desired)) {
+                std::cerr << "FAIL: the right Shift did not trigger a 'Shift' binding\n";
+                return 1;
+            }
+        }
+
+        // ⑤ 按住 Ctrl 再按 Shift ⇒ 不是干净的单击。
+        {
+            Detector d;
+            d.setSpec(leftShift);
+            bool desired = false;
+            d.handle(shiftL, true, ascii_switch::kShiftMask | ascii_switch::kControlMask,
+                     false, &desired);
+            if (d.handle(shiftL, false, 0, false, &desired)) {
+                std::cerr << "FAIL: Ctrl+Shift must not count as a clean Shift click\n";
+                return 1;
+            }
+        }
+
+        // ⑥ TIP 会把同一个物理按键送两遍（OnTestKeyDown + OnKeyDown），
+        //    仍然只能切一次，且「按下瞬间」的状态不能被第二遍改写。
+        {
+            Detector d;
+            d.setSpec(leftShift);
+            bool desired = false;
+            d.handle(shiftL, true, ascii_switch::kShiftMask, false, &desired);
+            // 第二遍到达时，ascii_mode 可能已被 ascii_composer 的 inline_ascii 置成 true。
+            d.handle(shiftL, true, ascii_switch::kShiftMask, true, &desired);
+            if (!d.handle(shiftL, false, 0, false, &desired)) {
+                std::cerr << "FAIL: a duplicated modifier press broke the click detection\n";
+                return 1;
+            }
+            if (!desired) {
+                std::cerr << "FAIL: the duplicated press corrupted the remembered state\n";
+                return 1;
+            }
+            if (d.handle(shiftL, false, 0, false, &desired)) {
+                std::cerr << "FAIL: the ascii mode toggled more than once per click\n";
+                return 1;
+            }
+        }
+
+        // ⑦ 非修饰键规格：按下即切。
+        {
+            Spec combo;
+            combo.keycodes = {letterA, 'a'};
+            combo.expectedMods = ascii_switch::kControlMask | ascii_switch::kShiftMask;
+            combo.isModifier = false;
+            combo.valid = true;
+            Detector d;
+            d.setSpec(combo);
+            bool desired = false;
+            if (!d.handle(letterA, true, combo.expectedMods, false, &desired) || !desired) {
+                std::cerr << "FAIL: a non-modifier switch key must toggle on the press\n";
+                return 1;
+            }
+        }
+
+        // ⑧ 禁用（规格为空）时永远不切。
+        {
+            Detector d;
+            bool desired = false;
+            if (d.handle(shiftL, true, ascii_switch::kShiftMask, false, &desired) ||
+                d.handle(shiftL, false, 0, false, &desired)) {
+                std::cerr << "FAIL: a disabled binding must never toggle\n";
+                return 1;
+            }
+        }
+
+        std::cout << "  -> PASS: the ascii switch click detection (clean click / Shift+A /"
+                     " side suffix / extra modifiers / duplicated events / disabled).\n";
     }
 
     // 15. Verify FluentUiAdapter maps Weasel Context/Status onto RimeUiState
