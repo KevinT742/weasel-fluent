@@ -230,6 +230,24 @@ if (Invoke-RegSvr32 -dllPath $TsfDllInstalled) {
     Write-Host "    [WARN] regsvr32 返回非零；请检查是否有杀毒软件拦截。" -ForegroundColor Yellow
 }
 
+# 清掉历史遗留的多余语言变体。
+#
+# 旧版注册对全部 5 种中文子语言都调过 InstallLayoutOrTip，于是 HKCU 下留下
+# 繁体/港/新/澳的 Enable=1 profile，Win+Space 列表里「繁体中文(中国台湾)」组下
+# 会多出一个「小狼毫」。注册逻辑已经改成只跟系统语言对齐，但残留要显式回滚。
+Write-Step "清理多余的语言变体"
+$cleanup = Join-Path $PSScriptRoot "cleanup-lang-variants.ps1"
+if (Test-Path $cleanup) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $cleanup
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "语言变体已清理"
+    } else {
+        Write-Host "    [WARN] 语言变体清理脚本返回 $LASTEXITCODE" -ForegroundColor Yellow
+    }
+} else {
+    Write-Info "找不到 cleanup-lang-variants.ps1，跳过"
+}
+
 Write-Step "校验 HKCU 影子注册"
 $clsidKey = "HKCU:\Software\Classes\CLSID\$OfficialClsid\InprocServer32"
 if (Test-Path $clsidKey) {

@@ -46,6 +46,11 @@ Invoke-Check 'tip-dll' {
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\verify-tip-dll.ps1')
 }
 
+# 语言变体：系统语言列表里只应有「系统 UI 语言」对应的那一个变体。
+Invoke-Check 'lang-profile' {
+    powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\verify-lang-profile.ps1')
+}
+
 # 语言栏 ↔ 服务端的端到端连通性（需要服务在跑，没跑就跳过）。
 Invoke-Check 'langbar-ipc' {
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\test_langbar_ipc.ps1')

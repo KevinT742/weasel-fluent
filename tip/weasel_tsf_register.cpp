@@ -106,9 +106,10 @@ size_t filterLangIdsBySystemUi(WCHAR* outBuf, size_t bufSize) {
     return 1;
 }
 
-/// 语言栏里显示的名字。官方 Weasel 用 `get_weasel_ime_name()`（返回「小狼毫」/「Weasel」），
-/// 本仓强调是 Fluent 前端，故加后缀区分。
-const wchar_t* kTextServiceDesc = L"小狼毫 (Fluent)";
+/// 语言栏 / 系统语言列表里显示的名字。
+/// 带「（简体中文）」是为了跟繁体变体区分开 —— 只写「小狼毫」时，
+/// 用户在 Win+Space 列表里分不清当前挂的是哪个变体。
+const wchar_t* kTextServiceDesc = L"小狼毫（简体中文）";
 
 void debugLog(const wchar_t* fmt, ...) {
     wchar_t buf[512];
@@ -226,6 +227,36 @@ BOOL writeUserLanguageProfiles(const wchar_t* dllPath, const WCHAR* langBuf, siz
     return TRUE;
 }
 
+/// 删除用户级（HKCU）某个语言变体的 profile 键。
+///
+/// 用途是回滚历史残留：旧版注册对全部 5 种中文子语言都调过 InstallLayoutOrTip，
+/// Windows 于是建出 `Enable=1` 的繁体/港/新/澳 profile（HKCU 里只有 Enable 一个值，
+/// Description 来自机器级），把它们列入「可添加的输入语言」——
+/// Win+Space 列表里「繁体中文(中国台湾)」组下就多出一个「小狼毫」。
+///
+/// 删掉 HKCU 这一份即回落机器级的 Enable=0（未启用），条目随之消失；
+/// 机器级不动（那是官方 Weasel 装的，交给 scripts\cleanup-lang-variants.ps1 处理）。
+void purgeUserLanguageProfile(LANGID langId) {
+    const std::wstring clsidStr = guidToString(c_clsidTextService);
+    wchar_t langKey[16] = {0};
+    swprintf_s(langKey, _countof(langKey), L"0x%08X", static_cast<unsigned>(langId));
+    const std::wstring key = std::wstring(L"Software\\Microsoft\\CTF\\TIP\\") +
+                             clsidStr + L"\\LanguageProfile\\" + langKey;
+    deleteRegTree(HKEY_CURRENT_USER, key.c_str());
+}
+
+/// 清掉与系统 UI 语言不匹配的历史变体（只删 HKCU 这一份）。
+void purgeStaleUserLanguageProfiles(LANGID keepLangId) {
+    for (LANGID langId : kLangIds) {
+        if (langId == keepLangId) {
+            continue;
+        }
+        purgeUserLanguageProfile(langId);
+    }
+    debugLog(L"[weasel-fluent] RegisterProfiles: 已清理非系统语言的历史变体（保留 0x%04x）",
+             keepLangId);
+}
+
 } // namespace
 
 // ── COM 类注册（HKCU 影子） ─────────────────────────────────────────────
@@ -290,7 +321,9 @@ BOOL RegisterProfiles() {
         constexpr size_t K_MAX_LANGS = sizeof(kLangIds) / sizeof(kLangIds[0]);
         WCHAR langBuf[K_MAX_LANGS] = {0};
         const size_t filteredCount = filterLangIdsBySystemUi(langBuf, K_MAX_LANGS);
-        return writeUserLanguageProfiles(dllPath, langBuf, filteredCount);
+        writeUserLanguageProfiles(dllPath, langBuf, filteredCount);
+        purgeStaleUserLanguageProfiles(static_cast<LANGID>(langBuf[0]));
+        return TRUE;
     }
     debugLog(L"[weasel-fluent] RegisterProfiles: 拿到 ITfInputProcessorProfiles");
 
@@ -340,7 +373,11 @@ BOOL RegisterProfiles() {
     profiles->Release();
     CoUninitialize();
     // HKCU 逐用户注册（含 InstallLayoutOrTip）使用相同的过滤数组。
-    return writeUserLanguageProfiles(dllPath, filteredLangBuf, filteredCount);
+    writeUserLanguageProfiles(dllPath, filteredLangBuf, filteredCount);
+    // 回滚历史残留：旧版给全部 5 种中文子语言都建过 Enable=1 的用户级 profile，
+    // 不清掉的话 Win+Space 里「繁体中文(中国台湾)」组下会多出一个「小狼毫」。
+    purgeStaleUserLanguageProfiles(static_cast<LANGID>(filteredLangBuf[0]));
+    return TRUE;
 }
 
 void UnregisterProfiles() {
@@ -358,6 +395,12 @@ void UnregisterProfiles() {
                                            c_guidProfile);
         }
         profiles->Release();
+    }
+
+    // 用户级：把本仓写过的语言 profile 全部删掉（含历史残留的繁体变体），
+    // 否则卸载后官方 Weasel 的繁体输入仍被我们遮蔽着。
+    for (LANGID langId : kLangIds) {
+        purgeUserLanguageProfile(langId);
     }
 
     CoUninitialize();
