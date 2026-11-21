@@ -125,6 +125,7 @@ public:
 protected:
     void paintEvent(QPaintEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void showEvent(QShowEvent* event) override;
 
 private slots:
     void onNavigationChanged(int row);

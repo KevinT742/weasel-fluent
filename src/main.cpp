@@ -31,6 +31,7 @@
 #include "rime_ui_state.h"
 #include "schema_manager.h"
 #include "skin_manager.h"
+#include "app_icon.h"
 #include "candidate_window.h"
 #include "settings_window.h"
 #include "emoji_picker_window.h"
@@ -375,6 +376,25 @@ int runVerificationSuite() {
               << " to y=" << downEnd.top() << " (mid height: " << downMid.height() << " > " << downEnd.height() << ").\n";
     std::cout << "  -> PASS: SettingsWindow StackContentHost correctly switched to page "
               << settingsWin.contentHost()->currentIndex() << ".\n";
+
+    // 4b. 窗口图标必须与托盘图标一致（同一张主题色方块 + 「中」字）。
+    // 不一致的话任务栏 / Alt+Tab 里显示的是 exe 资源里的「业」字图标，
+    // 跟托盘不是一个样 —— 属于「编译全绿但显示不对」的回归。
+    {
+        const QIcon actual = settingsWin.windowIcon();
+        const QIcon expected = makeAppIcon(AppConfig::instance().effectiveAccentColor());
+        if (actual.isNull()) {
+            std::cerr << "FAIL: SettingsWindow has no window icon!\n";
+            return 1;
+        }
+        const QImage a = actual.pixmap(QSize(32, 32)).toImage();
+        const QImage e = expected.pixmap(QSize(32, 32)).toImage();
+        if (a != e) {
+            std::cerr << "FAIL: SettingsWindow icon differs from the tray icon!\n";
+            return 1;
+        }
+        std::cout << "  -> PASS: SettingsWindow icon matches the tray icon.\n";
+    }
 
     // 5. Verify EmojiPickerWindow
     std::cout << "[TEST 5] Testing EmojiPickerWindow tabs, datasets, and pagination...\n";
@@ -1179,6 +1199,13 @@ int main(int argc, char* argv[]) {
     auto& cfg = AppConfig::instance();
     fluent::FluentElement::setTheme(cfg.isDarkTheme() ? fluent::FluentElement::Dark : fluent::FluentElement::Light);
     fluent::UserTheme::applyAccentOverride(cfg.effectiveAccentColor());
+
+    // 所有顶层窗口（设置中心、表情面板、扩展面板）用与托盘同一张图标。
+    // 不设的话 Windows 会拿 exe 资源里的「业」字图标 —— 与托盘不是一个样。
+    app.setWindowIcon(makeAppIcon(cfg.effectiveAccentColor()));
+    QObject::connect(&cfg, &AppConfig::configChanged, &app, [&app]() {
+        app.setWindowIcon(makeAppIcon(AppConfig::instance().effectiveAccentColor()));
+    });
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Weasel Fluent C++ Qt Input Method Frontend"));

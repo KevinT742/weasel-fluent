@@ -1,5 +1,6 @@
 #include "tray_menu.h"
 
+#include "app_icon.h"
 #include "config.h"
 #include "ui_engine.h"
 #include "ui_glyph_icon.h"
@@ -12,30 +13,6 @@
 
 #include "components/menus_toolbars/Menu.h"
 
-namespace {
-
-QIcon makeTrayIcon(bool chinese, const QColor& accent) {
-    QPixmap pix(32, 32);
-    pix.fill(Qt::transparent);
-    {
-        QPainter p(&pix);
-        p.setRenderHint(QPainter::Antialiasing);
-        p.setBrush(chinese ? accent : QColor(120, 120, 120));
-        p.setPen(Qt::NoPen);
-        p.drawRoundedRect(QRectF(2, 2, 28, 28), 6, 6);
-        p.setPen(Qt::white);
-        QFont f = p.font();
-        f.setPointSize(14);
-        f.setBold(true);
-        p.setFont(f);
-        p.drawText(QRectF(0, 0, 32, 32), Qt::AlignCenter,
-                   chinese ? QStringLiteral("中") : QStringLiteral("英"));
-    }
-    return QIcon(pix);
-}
-
-} // namespace
-
 TrayMenu::TrayMenu(QSystemTrayIcon* icon, UiEngine* engine, QObject* parent)
     : QObject(parent), m_icon(icon), m_engine(engine) {
     if (!m_icon) {
@@ -43,6 +20,9 @@ TrayMenu::TrayMenu(QSystemTrayIcon* icon, UiEngine* engine, QObject* parent)
     }
     rebuildMenu();
     rebuildIcon();
+    // 主题/强调色变了，托盘图标要跟着换（否则与窗口图标又不一致了）。
+    connect(&AppConfig::instance(), &AppConfig::configChanged,
+            this, &TrayMenu::rebuildIcon);
 }
 
 void TrayMenu::rebuildMenu() {
@@ -119,7 +99,7 @@ void TrayMenu::rebuildIcon() {
         return;
     }
     auto& cfg = AppConfig::instance();
-    m_icon->setIcon(makeTrayIcon(!m_ascii, cfg.effectiveAccentColor()));
+    m_icon->setIcon(makeAppIcon(!m_ascii, cfg.effectiveAccentColor()));
     m_icon->setToolTip(m_ascii ? QStringLiteral("Weasel Fluent 输入法 - 英文模式")
                                : QStringLiteral("Weasel Fluent 输入法 - 中文模式"));
 }

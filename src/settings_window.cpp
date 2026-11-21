@@ -1,5 +1,6 @@
 #include "settings_window.h"
 
+#include "app_icon.h"
 #include "dictionary_manager.h"
 #include "hotkey_capture_dialog.h"
 #include "key_bindings.h"
@@ -21,6 +22,7 @@
 #include <QEasingCurve>
 #include <QParallelAnimationGroup>
 #include <QScrollBar>
+#include <QShowEvent>
 #include <QDir>
 #include <QDateTime>
 #include <QFileInfo>
@@ -756,7 +758,23 @@ SettingsWindow::SettingsWindow(RimeConfigClient* config, QWidget* parent)
     resize(1000, 720);
     setMinimumSize(850, 560);
 
+    // 窗口图标与托盘用同一张（主题色方块 + 「中」字）。
+    // 不设的话 Windows 会拿 exe 资源里的「业」字图标 —— 跟托盘不是一个样。
+    setWindowIcon(makeAppIcon(AppConfig::instance().effectiveAccentColor()));
+    connect(&AppConfig::instance(), &AppConfig::configChanged, this, [this]() {
+        setWindowIcon(makeAppIcon(AppConfig::instance().effectiveAccentColor()));
+    });
+
     setupUi();
+}
+
+void SettingsWindow::showEvent(QShowEvent* event) {
+    fluent::windowing::Window::showEvent(event);
+
+    // 原生窗口句柄这会儿才存在，Qt 才能把图标推给 Windows（发 WM_SETICON）。
+    // 构造阶段那次 setWindowIcon 推不出去 —— 实测 WM_GETICON 与 GWLP_HICON
+    // 都是 0，Windows 只能退回 exe 资源里的「业」字图标，跟托盘不是一个样。
+    setWindowIcon(makeAppIcon(AppConfig::instance().effectiveAccentColor()));
 }
 
 void SettingsWindow::paintEvent(QPaintEvent* /*event*/) {
