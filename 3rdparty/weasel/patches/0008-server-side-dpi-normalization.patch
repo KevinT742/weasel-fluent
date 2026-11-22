@@ -1,0 +1,66 @@
+diff --git a/3rdparty/weasel/WeaselIPCServer/WeaselServerImpl.cpp b/3rdparty/weasel/WeaselIPCServer/WeaselServerImpl.cpp
+index 8ee4d49..f70e6e9 100644
+--- a/3rdparty/weasel/WeaselIPCServer/WeaselServerImpl.cpp
++++ b/3rdparty/weasel/WeaselIPCServer/WeaselServerImpl.cpp
+@@ -306,15 +306,52 @@ DWORD ServerImpl::OnUpdateInputPosition(WEASEL_IPC_COMMAND uMsg,
+   rc.bottom = rc.top + height;
+ 
+   {
+-    using PPTLPFPMDPI = BOOL(WINAPI*)(HWND, LPPOINT);
+-    auto PhysicalToLogicalPointForPerMonitorDPI =
+-        (PPTLPFPMDPI)::GetProcAddress(m_hUser32Module,
+-                                      "PhysicalToLogicalPointForPerMonitorDPI");
+-    POINT lt = {rc.left, rc.top};
+-    POINT rb = {rc.right, rc.bottom};
+-    PhysicalToLogicalPointForPerMonitorDPI(NULL, &lt);
+-    PhysicalToLogicalPointForPerMonitorDPI(NULL, &rb);
+-    rc = {lt.x, lt.y, rb.x, rb.y};
++    // [weasel-fluent] 把宿主送来的矩形换算到 96-DPI 逻辑坐标。
++    //
++    // 宿主进程送来的矩形属于**它自己的**坐标空间：Per-Monitor / System DPI
++    // 感知的宿主返回**物理像素**（Chromium / Electron / VS Code 都是），
++    // 而候选窗是 Qt 窗口，Qt 用 96-DPI 逻辑坐标定位 —— 150% 的屏幕上
++    // 1 个逻辑像素是 1.5 个物理像素。不换算，候选窗就跑到光标的 1.5 倍远处。
++    //
++    // DPI 不感知的宿主不用换：系统已经把它的坐标虚拟化到 96-DPI 空间了。
++    //
++    // 为什么在**服务端**换而不是 TIP 里：TIP DLL 是被**逐个宿主进程**加载的
++    // （每个 app 一份副本），换算逻辑放进 TIP 就意味着每个正在运行的程序
++    // 都得重启才能生效。服务端是唯一能同时拿到「前台宿主窗口」和「自己用的
++    // 坐标空间」的地方，放在这里只要重启服务即可对所有程序生效。
++    //
++    // GetWindowDpiAwarenessContext / GetDpiForWindow 是 Win10 的 API，本工程
++    // 最低目标 Win8.1（SDK 不声明），运行时解析。
++    using PGetWindowAwarenessContext =
++        DPI_AWARENESS_CONTEXT(WINAPI *)(HWND);
++    using PGetAwarenessFromContext =
++        DPI_AWARENESS(WINAPI *)(DPI_AWARENESS_CONTEXT);
++    using PGetDpiForWindow = UINT(WINAPI *)(HWND);
++
++    auto get_window_awareness = reinterpret_cast<PGetWindowAwarenessContext>(
++        ::GetProcAddress(m_hUser32Module, "GetWindowDpiAwarenessContext"));
++    auto get_awareness = reinterpret_cast<PGetAwarenessFromContext>(
++        ::GetProcAddress(m_hUser32Module, "GetAwarenessFromDpiAwarenessContext"));
++    auto get_dpi_for_window = reinterpret_cast<PGetDpiForWindow>(
++        ::GetProcAddress(m_hUser32Module, "GetDpiForWindow"));
++
++    HWND fg = ::GetForegroundWindow();
++    if (fg != nullptr && get_window_awareness != nullptr &&
++        get_awareness != nullptr && get_dpi_for_window != nullptr) {
++      DPI_AWARENESS_CONTEXT context = get_window_awareness(fg);
++      DPI_AWARENESS awareness = get_awareness(context);
++      bool unaware = (awareness == DPI_AWARENESS_UNAWARE ||
++                      awareness == DPI_AWARENESS_INVALID);
++      if (!unaware) {
++        UINT dpi = get_dpi_for_window(fg);
++        if (dpi > 96) {
++          rc.left = ::MulDiv(rc.left, 96, static_cast<int>(dpi));
++          rc.top = ::MulDiv(rc.top, 96, static_cast<int>(dpi));
++          rc.right = ::MulDiv(rc.right, 96, static_cast<int>(dpi));
++          rc.bottom = ::MulDiv(rc.bottom, 96, static_cast<int>(dpi));
++        }
++      }
++    }
+   }
+ 
+   m_pRequestHandler->UpdateInputPosition(rc, lParam);

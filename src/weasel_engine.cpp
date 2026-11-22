@@ -22,6 +22,8 @@
 #include <windows.h>
 
 #include <atomic>
+#include <map>
+#include <mutex>
 #include <vector>
 
 #include <WeaselUtility.h>
@@ -73,6 +75,94 @@ LRESULT CALLBACK CommandWindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
 /// 上游 `ConvertKeyEvent` 只可能设出 SHIFT / CONTROL / ALT 三种
 /// （LOCK 是 CapsLock 状态，与切换键无关；SUPER / META 在 Windows 上压根不设）。
 constexpr UINT kIbusModifierBits = ascii_switch::kModifierMask;
+
+/// 把输入框矩形的变化记到临时目录的日志里。
+///
+/// 为什么需要：TIP 送来的矩形是「哪个控件的哪个范围」的判断结果，
+/// 而 Win32 没有标准 API 能反查「这个矩形到底是谁给的」。出了问题时
+/// 只能把两边的数字摆在一起看：
+///   * TIP 送来的 rc（服务端已换算过的值）；
+///   * 系统里**真实的光标位置**（GetGUIThreadInfo 的 hwndCaret + ClientToScreen）。
+/// 两者对不上 ⇒ 是 TIP 取错了矩形；两者一致 ⇒ 是本仓的坐标换算错了。
+///
+/// 默认关闭：设环境变量 WEASEL_FLUENT_POSITION_LOG=1 才落盘，
+/// 免得每次输入都往临时目录写文件。
+///
+/// 用 GetTempPath 而不是固定路径：既不依赖安装位置，也不会污染用户目录。
+void logInputPosition(RECT const& rc) {
+    static const bool enabled = []() {
+        wchar_t flag[8] = {0};
+        return ::GetEnvironmentVariableW(L"WEASEL_FLUENT_POSITION_LOG", flag,
+                                         _countof(flag)) > 0 &&
+               flag[0] == L'1';
+    }();
+    if (!enabled) {
+        return;
+    }
+
+    static std::atomic<int> counter{0};
+    // 前 200 条足够定位一次输入会话，又不会把日志刷爆。
+    if (counter.fetch_add(1) >= 200) {
+        return;
+    }
+
+    wchar_t tempDir[MAX_PATH] = {0};
+    ::GetTempPathW(_countof(tempDir), tempDir);
+    const std::wstring path = std::wstring(tempDir) + L"weasel-fluent-position.log";
+
+    GUITHREADINFO gti = {0};
+    gti.cbSize = sizeof(gti);
+    HWND caretWnd = nullptr;
+    POINT caret = {0};
+    if (::GetGUIThreadInfo(::GetWindowThreadProcessId(::GetForegroundWindow(), nullptr),
+                           &gti)) {
+        caretWnd = gti.hwndCaret;
+        caret.x = gti.rcCaret.left;
+        caret.y = gti.rcCaret.top;
+    }
+
+    HWND fg = ::GetForegroundWindow();
+    RECT fgRect = {0};
+    if (fg) {
+        ::GetWindowRect(fg, &fgRect);
+    }
+    POINT caretScreen = caret;
+    if (caretWnd) {
+        ::ClientToScreen(caretWnd, &caretScreen);
+    }
+    POINT caretClientOrigin = {0};
+    if (caretWnd) {
+        ::ClientToScreen(caretWnd, &caretClientOrigin);
+    }
+
+    const std::string line =
+        "rc=(" + std::to_string(rc.left) + "," + std::to_string(rc.top) + "," +
+        std::to_string(rc.right) + "," + std::to_string(rc.bottom) + ")" +
+        " fg=0x" + std::to_string(reinterpret_cast<uintptr_t>(fg)) +
+        " fgRect=(" + std::to_string(fgRect.left) + "," + std::to_string(fgRect.top) + "," +
+        std::to_string(fgRect.right) + "," + std::to_string(fgRect.bottom) + ")" +
+        " caretWnd=0x" + std::to_string(reinterpret_cast<uintptr_t>(caretWnd)) +
+        " caretClient=(" + std::to_string(caret.x) + "," + std::to_string(caret.y) + ")" +
+        " caretScreen=(" + std::to_string(caretScreen.x) + "," +
+        std::to_string(caretScreen.y) + ")" +
+        " caretOrigin=(" + std::to_string(caretClientOrigin.x) + "," +
+        std::to_string(caretClientOrigin.y) + ")" +
+        " dpi=" + std::to_string(fg ? ::GetDpiForWindow(fg) : 0) +
+        " sysDpi=" + std::to_string(::GetDpiForSystem()) +
+        " serverAwareness=" +
+        std::to_string(::GetAwarenessFromDpiAwarenessContext(
+            ::GetThreadDpiAwarenessContext())) +
+        "\r\n";
+
+    HANDLE file = ::CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
+                                OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    DWORD written = 0;
+    ::WriteFile(file, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+    ::CloseHandle(file);
+}
 
 /// Qt 键码 → ibus 键码集合。
 ///
@@ -206,6 +296,9 @@ public:
 
     BOOL ProcessKeyEvent(weasel::KeyEvent keyEvent, WeaselSessionId ipc_id,
                          EatLine eat) override {
+        if (!sessionAlive(ipc_id)) {
+            return FALSE;
+        }
         m_lastSessionId.store(ipc_id);
 
         // ── 中英文切换键 ────────────────────────────────────────────────
@@ -220,11 +313,13 @@ public:
         // 按键**不吞掉** —— 吞掉的话 Shift+A 的大小写就没了。
         refreshSwitchSpec();
         bool desired = false;
+        const bool cachedAscii = m_engine ? m_engine->isAsciiMode() : false;
+        const bool currentAscii = knownAsciiMode(ipc_id, cachedAscii);
         const bool toggle = m_switchDetector.handle(
             keyEvent.keycode,
             (keyEvent.mask & ibus::RELEASE_MASK) == 0,
             keyEvent.mask & kIbusModifierBits,
-            m_engine ? m_engine->isAsciiMode() : false,
+            currentAscii,
             &desired);
 
         BOOL eaten = RimeWithWeaselHandler::ProcessKeyEvent(keyEvent, ipc_id, eat);
@@ -236,11 +331,105 @@ public:
         return eaten;
     }
 
+    void ClearComposition(WeaselSessionId ipc_id) override {
+        if (!sessionAlive(ipc_id)) {
+            return;
+        }
+        m_lastSessionId.store(ipc_id);
+        RimeWithWeaselHandler::ClearComposition(ipc_id);
+    }
+
+    void CommitComposition(WeaselSessionId ipc_id) override {
+        if (!sessionAlive(ipc_id)) {
+            return;
+        }
+        m_lastSessionId.store(ipc_id);
+        RimeWithWeaselHandler::CommitComposition(ipc_id);
+    }
+
+    void SelectCandidateOnCurrentPage(size_t index, WeaselSessionId ipc_id) override {
+        if (!sessionAlive(ipc_id)) {
+            return;
+        }
+        RimeWithWeaselHandler::SelectCandidateOnCurrentPage(index, ipc_id);
+    }
+
+    bool HighlightCandidateOnCurrentPage(size_t index, WeaselSessionId ipc_id,
+                                         EatLine eat) override {
+        if (!sessionAlive(ipc_id)) {
+            return false;
+        }
+        return RimeWithWeaselHandler::HighlightCandidateOnCurrentPage(index, ipc_id, eat);
+    }
+
+    bool ChangePage(bool backward, WeaselSessionId ipc_id, EatLine eat) override {
+        if (!sessionAlive(ipc_id)) {
+            return false;
+        }
+        return RimeWithWeaselHandler::ChangePage(backward, ipc_id, eat);
+    }
+
+    void FocusIn(DWORD param, WeaselSessionId ipc_id) override {
+        if (!sessionAlive(ipc_id)) {
+            return;
+        }
+        m_lastSessionId.store(ipc_id);
+        RimeWithWeaselHandler::FocusIn(param, ipc_id);
+    }
+
+    void FocusOut(DWORD param, WeaselSessionId ipc_id) override {
+        if (!sessionAlive(ipc_id)) {
+            return;
+        }
+        RimeWithWeaselHandler::FocusOut(param, ipc_id);
+    }
+
+    void SetOption(WeaselSessionId ipc_id, const std::string& opt, bool val) override {
+        // 语言栏的「切换中/英」**不带会话 id**（上游 TrayCommand 的 lParam 是 0），
+        // 上游于是落到 m_active_session —— 那是 vendor 的私有成员，我们看不到。
+        // 这里改用自己记的 active 会话：它要是已经随维护失效了，整条命令丢掉，
+        // 免得打进 Rime 里那个不存在的 session。
+        if (!ipc_id) {
+            ipc_id = m_lastSessionId.load();
+        }
+        if (!sessionAlive(ipc_id)) {
+            return;
+        }
+
+        // 记住我们自己设过的中英状态 —— 判定「要不要切」必须用**实时**值。
+        //
+        // 为什么不能直接用缓存的 m_status：librime 的 ascii_mode 是**异步生效**
+        // 的（set_option 之后要等引擎处理待办事件，get_status 才反映出来）。
+        // 缓存因此可能还停在旧值 —— 连点两下 Shift 时，第二次会拿旧值取反，
+        // 算出「还是原来那个模式」的目标，看起来就是 Shift 没反应（实测 2026-11-22）。
+        //
+        // 这里记的是**我们自己**写进去的值：inline_ascii 那种「按住 Shift 临时
+        // 置成 true、抬手再恢复」的临时态走的是 Rime 内部，不会经过 SetOption，
+        // 所以不会污染这里记下的「稳定态」。
+        if (opt == "ascii_mode") {
+            std::lock_guard<std::mutex> lock(m_asciiMutex);
+            m_asciiMode[ipc_id] = val;
+        }
+        RimeWithWeaselHandler::SetOption(ipc_id, opt, val);
+    }
+
+    DWORD RemoveSession(WeaselSessionId ipc_id) override {
+        {
+            std::lock_guard<std::mutex> lock(m_asciiMutex);
+            m_asciiMode.erase(ipc_id);
+        }
+        if (!sessionAlive(ipc_id)) {
+            // 会话已经随维护消失 ⇒ 只清我们自己的记录，别再去 destroy。
+            return 0;
+        }
+        return RimeWithWeaselHandler::RemoveSession(ipc_id);
+    }
+
     void UpdateInputPosition(RECT const& rc, WeaselSessionId ipc_id) override {
         // [weasel-fluent] Pass input-box rect to WeaselEngine for candidate
-        // window follow. Only called when the TIP client provides one
-        // (EDIT/RICHEDIT text boxes). For other controls TIP still sends
-        // a thin "caret-at-cursor" rect, but our detector ignores it.
+        // window follow. The rect comes from the TIP client (already converted
+        // to logical pixels by the IPC server).
+        logInputPosition(rc);
         if (m_engine) {
             m_engine->setInputBox(QRect(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top));
         }
@@ -251,6 +440,34 @@ public:
     WeaselSessionId lastSessionId() const { return m_lastSessionId.load(); }
 
 private:
+    /// 这个会话在 Rime 那边**还活着**吗？
+    ///
+    /// 维护操作（重新部署 / 同步用户数据）会重建 Rime 的 SessionManager，
+    /// 旧会话全部消失 —— 但客户端（TIP）手里还攥着旧的 ipc_id，而 vendor 的
+    /// `to_session_id()` 会把会话表里那个**已经失效**的 session_id 取出来。
+    /// 之后任何针对它的 Rime 调用（clear_composition / process_key /
+    /// set_option …）都会打进一个不存在的会话：librime 1.17 在这些接口里
+    /// **不做空指针检查** ⇒ rime.dll 里抛 0xC0000005，**整个服务进程直接
+    /// 崩掉**（实测 2026-11-22：语言栏点一下「同步用户数据」，随后来一条
+    /// 普通消息，服务就没了；HEAD 构建同样复现，与本仓改动无关）。
+    ///
+    /// FindSession 走的是 `rime_api->find_session` —— 只查表、不碰会话对象，
+    /// 维护之后再问一次也只是返回 0（实测安全，服务照常活着）。
+    /// 所以：**进 Rime 之前先问一句**，死了就直接把这条消息丢掉。
+    ///
+    /// 代价：维护之后的那一个会话是废的，直到失焦再回来（TIP 会重新
+    /// StartSession 拿到新 id）。这比整个服务崩掉好得多。
+    bool sessionAlive(WeaselSessionId ipc_id) {
+        return ipc_id != 0 && FindSession(ipc_id) != 0;
+    }
+
+    /// 取这个会话**已知**的中英状态；没有记录时回退到引擎缓存的值。
+    bool knownAsciiMode(WeaselSessionId ipc_id, bool fallback) const {
+        std::lock_guard<std::mutex> lock(m_asciiMutex);
+        auto it = m_asciiMode.find(ipc_id);
+        return it == m_asciiMode.end() ? fallback : it->second;
+    }
+
     /// 配置变了才重新解析切换键规格（每个按键都解析一次太浪费）。
     void refreshSwitchSpec() {
         const QString spec = KeyActions::effectiveAsciiSwitchSpec();
@@ -265,6 +482,8 @@ private:
     WeaselEngine* m_engine = nullptr;
     ascii_switch::Detector m_switchDetector;
     QString m_switchSpecText;
+    mutable std::mutex m_asciiMutex;  // mutable：判定函数是 const 的
+    std::map<WeaselSessionId, bool> m_asciiMode;
 };
 
 } // namespace

@@ -56,6 +56,11 @@ Invoke-Check 'langbar-icons' {
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\verify-langbar-icons.ps1')
 }
 
+# DPI 换算链：TIP → 服务端 → 候选窗，坐标换算只能发生一次且必须在服务端。
+Invoke-Check 'dpi-normalization' {
+    powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\verify-dpi-normalization.ps1')
+}
+
 # 语言栏 ↔ 服务端的端到端连通性（需要服务在跑，没跑就跳过）。
 Invoke-Check 'langbar-ipc' {
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\test_langbar_ipc.ps1')
