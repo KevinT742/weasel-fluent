@@ -164,38 +164,22 @@ std::wstring guidToString(REFGUID guid) {
 
 /// 把 TIP 加进**当前用户的语言列表**。
 ///
-/// 用系统的 `InstallLayoutOrTip`（imm32.dll 导出）—— 这是微软文档里
-/// 「把某个 TIP 加进用户语言列表」的正路，写的是 HKCU，不需要管理员。
-bool installLanguageProfileTip(const std::wstring& tipString) {
-    HMODULE imm32 = ::LoadLibraryW(L"imm32.dll");
-    if (!imm32) {
-        return false;
-    }
-    typedef BOOL(WINAPI* PfnInstallLayoutOrTip)(LPCWSTR);
-    PfnInstallLayoutOrTip fn = reinterpret_cast<PfnInstallLayoutOrTip>(
-        ::GetProcAddress(imm32, "InstallLayoutOrTip"));
-    if (!fn) {
-        ::FreeLibrary(imm32);
-        return false;
-    }
-    const BOOL ok = fn(tipString.c_str());
-    ::FreeLibrary(imm32);
-    return ok != FALSE;
-}
-
-/// 逐用户写语言 profile + 加进用户语言列表。
+/// ⚠️ 这里**刻意不去调**系统的 `InstallLayoutOrTip`。
 ///
-/// `ITfInputProcessorProfiles::AddLanguageProfile` 走的是**机器级**注册路径，
-/// 没有管理员权限时它必然 E_FAIL（实测：本机官方 Weasel 是 system32\weasel.dll，
-/// profile 已经在机器级注册好了，AddLanguageProfile 照样 E_FAIL）。
+/// 实测（2026-11-22，本机 Win11）：`InstallLayoutOrTip("0804:{CLSID}{profile}")`
+/// 对**逐用户注册**的 TIP 并不友好 —— 它把用户语言列表里原有的这一条
+/// **删掉**了，顺手往 `HKCU\Keyboard Layout\Preload` 里塞进
+/// `00000c04 / 00001004 / 00001404` 三个繁体/港/新/澳的键盘布局，
+/// 并把用户级 profile 的 `Enable` 置 0。结果就是：
+///   * Win+Space 列表里「小狼毫」消失或点不动；
+///   * 多出来的繁体变体污染键盘布局列表。
+/// 上游 Weasel 不调它，是因为它用 `ITfInputProcessorProfileMgr::RegisterProfile`
+/// 做**机器级**注册，注册由安装器（管理员）完成，列表项是官方安装器写的。
+/// 本仓是免提权的逐用户安装，机器级注册不可用 ⇒ 这条路走不通。
 ///
-/// 所以逐用户注册走两条**不需要管理员**的路：
-///   1. 直接按 TSF 的注册表布局写 HKCU 那一份语言 profile
-///      （HKCU\Software\Microsoft\CTF\TIP\{CLSID}\LanguageProfile\0x0000xxxx\{ProfileGUID}
-///        的 Description / IconFile / IconIndex / Enable）；
-///      TSF 读取时 HKCU 优先于 HKLM，规则和 COM 类一样。
-///   2. 用系统的 `InstallLayoutOrTip` 把这个 TIP 加进**用户语言列表**。
-BOOL writeUserLanguageProfiles(const wchar_t* dllPath, const WCHAR* langBuf, size_t count) {
+/// 正确的做法是让**安装脚本**负责列表项（见 scripts/install.ps1 的
+/// `Set-WinUserLanguageList`），TIP 自己只负责写用户级 profile。
+bool writeUserLanguageProfiles(const wchar_t* dllPath, const WCHAR* langBuf, size_t count) {
     const std::wstring clsidStr = guidToString(c_clsidTextService);
     const std::wstring profileStr = guidToString(c_guidProfile);
 
@@ -215,15 +199,8 @@ BOOL writeUserLanguageProfiles(const wchar_t* dllPath, const WCHAR* langBuf, siz
                  ok ? L"OK" : L"失败");
     }
 
-    // InstallLayoutOrTip tipString 格式: "<LCID>:{clsid}{profile}"，
-    // 其中前四位必须与系统实际语言相符，否则 Windows 语言列表可能忽略该条目。
-    const LANGID primaryLang = count > 0 ? static_cast<LANGID>(langBuf[0]) : kLangIds[0];
-    wchar_t prefix[8] = {0};
-    swprintf_s(prefix, _countof(prefix), L"%04X:", static_cast<unsigned>(primaryLang));
-    const std::wstring tipString = std::wstring(prefix) + clsidStr + profileStr;
-    const bool installed = installLanguageProfileTip(tipString);
-    debugLog(L"[weasel-fluent] RegisterProfiles: InstallLayoutOrTip(%s) %s",
-             tipString.c_str(), installed ? L"OK" : L"未生效（可能已有同一条目）");
+    debugLog(L"[weasel-fluent] RegisterProfiles: 不调用 InstallLayoutOrTip"
+             L"（它会删掉用户语言列表里的本条目并注入多余变体，见函数注释）");
     return TRUE;
 }
 

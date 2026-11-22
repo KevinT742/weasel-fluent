@@ -146,8 +146,8 @@ foreach ($lang in $staleLangs) {
     }
 }
 
-# 生效变体：写齐 Description / IconFile / IconIndex / Enable。
-# IconFile 取影子注册里实际指向的 DLL（安装目录里的那个可能带时间戳）。
+# 生效变体的 profile 键要**在语言列表写入之后**再写（见下面那一节的说明），
+# 这里先把要用到的路径算出来。
 $keepName = Get-LangKeyName $keepLang
 $keepKey = Join-Path $hkcuTip "$keepName\$OfficialProfile"
 $iconFile = ""
@@ -159,6 +159,49 @@ if (-not $iconFile) {
     $iconFile = Join-Path $env:LOCALAPPDATA "Programs\WeaselFluent\weasel-fluent-tsf.dll"
 }
 
+# ── 用户级：语言列表里的 TIP 条目 ────────────────────────────────────────
+#
+# 这是「能在 Win+Space / 任务栏指示器里**点到**小狼毫并切过去」的前提：
+# 系统语言列表里没有这条，切换器里就没有这个输入法（或者有条目但点不动）。
+#
+# 列表项由 Set-WinUserLanguageList 维护（「设置 → 时间和语言 → 语言选项」背后
+# 的那套 WinRT API），逐用户、不需要管理员。
+#
+# ⚠️ 绝不能用系统的 InstallLayoutOrTip 来做这件事：对**逐用户注册**的 TIP，
+# 它会把列表里原有的这一条**删掉**，并往 HKCU\Keyboard Layout\Preload 里注入
+# 00000c04 / 00001004 / 00001404 三个多余的中文变体（实测 2026-11-22）。
+$langTag = switch ($keepLang) {
+    0x0404 { "zh-Hant-TW" }
+    0x0c04 { "zh-Hant-HK" }
+    0x1004 { "zh-Hans-SG" }
+    0x1404 { "zh-Hant-MO" }
+    default { "zh-Hans-CN" }
+}
+$tipEntry = "0804:$OfficialClsid$OfficialProfile"
+$langList = Get-WinUserLanguageList
+$target = $langList | Where-Object { $_.LanguageTag -eq $langTag } | Select-Object -First 1
+if (-not $target) {
+    Write-Warn "用户语言列表里没有 $langTag，跳过 TIP 条目写入"
+} elseif ($target.InputMethodTips -contains $tipEntry) {
+    Write-Ok "$langTag 的输入方法列表里已经有本 TIP"
+} else {
+    if (-not $WhatIf) {
+        # 追加而不是覆盖：同语言下的其它输入法（微软拼音等）必须保留。
+        $target.InputMethodTips.Add($tipEntry)
+        Set-WinUserLanguageList $langList -Force
+    }
+    Write-Ok "$langTag 的输入方法列表已加入本 TIP"
+}
+
+# ── 用户级：生效变体的 profile 键（写齐 Description / IconFile / Enable）──
+#
+# ⚠️ **必须排在语言列表写入之后**（实测 2026-11-22）：
+# `Set-WinUserLanguageList -Force` 会让系统重新走一遍「注册这条 TIP」的流程，
+# 顺手把 HKCU 下**逐用户**的 LanguageProfile 键删掉（机器级没有我们的键，
+# 于是删干净了）。所以顺序反了的话，刚写好的 Description / IconFile /
+# Enable 全被抹掉 —— 表现就是「切换器里点得到小狼毫，但指示器没有字形」。
+#
+# IconFile 取影子注册里实际指向的 DLL（安装目录里的那个可能带时间戳）。
 if (-not $WhatIf) {
     New-Item -Path $keepKey -Force | Out-Null
     Set-ItemProperty -Path $keepKey -Name "Description" -Value $ExpectedDesc -Type String
@@ -251,6 +294,44 @@ if ($sub) {
         }
     }
     $sub.Close()
+}
+
+# ── 安装目录：陈旧的 TIP DLL 副本 ────────────────────────────────────────
+#
+# TIP DLL 被宿主进程加载后不能覆盖，安装器因此会退回「带时间戳的文件名」。
+# 每次升级都在安装目录里留下一份旧副本（实测 2026-11-22 已积到 9 份），
+# 而注册表（COM 影子 + profile 的 IconFile）只指向当前那一份。
+# 这里把**没有**被注册表引用、且没有被进程占用的旧副本清掉。
+$installDir = Join-Path $env:LOCALAPPDATA "Programs\WeaselFluent"
+if (Test-Path $installDir) {
+    $registered = ""
+    if ($iconFile) {
+        try { $registered = [System.IO.Path]::GetFullPath($iconFile) } catch { $registered = "" }
+    }
+    $removed = 0
+    $copies = @(Get-ChildItem -Path $installDir -Filter "weasel-fluent-tsf*.dll" -File -ErrorAction SilentlyContinue)
+    foreach ($f in $copies) {
+        $full = [System.IO.Path]::GetFullPath($f.FullName)
+        if ($registered -and $full -eq $registered) {
+            continue
+        }
+        if (-not $WhatIf) {
+            try {
+                Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
+                $removed++
+                Write-Info "[清理] 旧 TIP 副本 $(Split-Path $f.FullName -Leaf)"
+            } catch {
+                Write-Warn "旧 TIP 副本 $(Split-Path $f.FullName -Leaf) 仍被进程占用，跳过"
+            }
+        } else {
+            Write-Info "[清理] 旧 TIP 副本 $(Split-Path $f.FullName -Leaf)"
+        }
+    }
+    if ($removed -gt 0) {
+        Write-Ok "已清理 $removed 份旧 TIP 副本"
+    } elseif ($copies.Count -le 1) {
+        Write-Info "安装目录里没有多余的 TIP 副本"
+    }
 }
 
 Write-Host ""

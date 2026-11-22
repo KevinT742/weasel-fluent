@@ -11,8 +11,11 @@
 # 断言：
 #   1. HKCU 的 LanguageProfile 下只有系统 UI 语言对应的那一个 LANGID 子键；
 #   2. 该子键的 Description 是约定的显示名；
-#   3. HKCU\Keyboard Layout\Preload 里没有多余变体的 d001/孤儿布局项；
-#   4. 机器级（HKLM）没有多余变体的 profile —— 需要管理员才能删，
+#   3. 该子键的 IconFile 指向的文件真的在磁盘上、Enable=1；
+#   4. **用户语言列表里有本 TIP 的条目**（Win+Space 里点得到小狼毫的前提）；
+#   5. HKCU 的 COM 影子注册指向的文件存在；
+#   6. HKCU\Keyboard Layout\Preload 里没有多余变体的 d001/孤儿布局项；
+#   7. 机器级（HKLM）没有多余变体的 profile —— 需要管理员才能删，
 #      非管理员运行时降级为 WARN（不计入失败）。
 #
 # 用法：
@@ -104,6 +107,30 @@ if (-not (Test-Path $hkcuTip)) {
             } else {
                 Write-Host ("PASS: HKCU 生效变体 {0} 的显示名是「{1}」" -f $keepName, $desc) -ForegroundColor Green
             }
+
+            # IconFile 指向的文件必须真的在磁盘上。
+            #
+            # 为什么重要：TIP DLL 被正在运行的程序占用时，安装器会退而求其次
+            # 装成带时间戳的文件名（weasel-fluent-tsf.2026….dll）。
+            # 如果那份文件后来被删了而注册表还指着它，系统在切换到这个输入法时
+            # 就**加载不到 TIP** —— 症状正是「点列表里的小狼毫没反应」，
+            # 而编译链接全绿、注册表也「看起来正常」。
+            $iconFile = (Get-ItemProperty -Path $profileKey -Name "IconFile" -ErrorAction SilentlyContinue).IconFile
+            if (-not $iconFile) {
+                $problems += "HKCU $keepName has no IconFile"
+                Write-Host ("FAIL: HKCU {0} 的 profile 没有 IconFile" -f $keepName) -ForegroundColor Red
+            } elseif (-not (Test-Path -LiteralPath $iconFile)) {
+                $problems += "HKCU $keepName IconFile does not exist on disk: $iconFile"
+                Write-Host ("FAIL: IconFile 指向的文件不存在：{0}" -f $iconFile) -ForegroundColor Red
+            } else {
+                Write-Host ("PASS: IconFile 指向的文件存在：{0}" -f $iconFile) -ForegroundColor Green
+            }
+
+            $enable = (Get-ItemProperty -Path $profileKey -Name "Enable" -ErrorAction SilentlyContinue).Enable
+            if ($enable -ne 1) {
+                $problems += "HKCU $keepName Enable is '$enable', expected 1"
+                Write-Host ("FAIL: Enable = {0}，期望 1（0 意味着这个变体在语言列表里是禁用的）" -f $enable) -ForegroundColor Red
+            }
         }
     }
 
@@ -112,7 +139,53 @@ if (-not (Test-Path $hkcuTip)) {
     }
 }
 
-# ── 2. 键盘布局 Preload 里的残留 ────────────────────────────────────────
+# ── 2. 用户语言列表里的 TIP 条目 ─────────────────────────────────────────
+#
+# 这是「能在 Win+Space / 任务栏指示器里**点到**小狼毫并切过去」的**前提**。
+#
+# 真实踩过的坑：注册逻辑调过系统的 `InstallLayoutOrTip`，它把语言列表里原有的
+# 这一条**删掉**了（并且往键盘布局里注入多余的中文变体）。结果列表里要么没有
+# 「小狼毫」，要么有条目但点不动 —— 而注册表里的 profile 看着一切正常。
+#
+# ⚠️ `Get-WinUserLanguageList` 返回 `List<WinUserLanguage>`，用 `@(...)` 包
+#    **不会**展开；必须走成员访问枚举 `$langList.LanguageTag`。
+$langTag = switch ($keepLang) {
+    0x0404 { "zh-Hant-TW" }
+    0x0c04 { "zh-Hant-HK" }
+    0x1004 { "zh-Hans-SG" }
+    0x1404 { "zh-Hant-MO" }
+    default { "zh-Hans-CN" }
+}
+$tipEntry = "0804:$OfficialClsid$OfficialProfile"
+$langList = Get-WinUserLanguageList -ErrorAction SilentlyContinue
+$tags = @($langList.LanguageTag)
+$target = $langList | Where-Object { $_.LanguageTag -eq $langTag } | Select-Object -First 1
+if (-not $target) {
+    $problems += "the user language list has no '$langTag' entry"
+    Write-Host ("FAIL: 用户语言列表里没有 {0}" -f $langTag) -ForegroundColor Red
+} elseif (@($target.InputMethodTips) -contains $tipEntry) {
+    Write-Host ("PASS: {0} 的输入方法列表里有本 TIP" -f $langTag) -ForegroundColor Green
+} else {
+    $problems += "the user language list for '$langTag' does not contain our TIP entry"
+    Write-Host ("FAIL: {0} 的输入方法列表里没有本 TIP（Win+Space 里点不到小狼毫）" -f $langTag) -ForegroundColor Red
+    Write-Host ("      当前: {0}" -f (@($target.InputMethodTips) -join ", ")) -ForegroundColor DarkGray
+}
+Write-Host ("    当前语言列表: {0}" -f ($tags -join ", ")) -ForegroundColor DarkGray
+
+# COM 影子注册指向的文件也必须存在（TIP 靠它被加载）。
+$shadowKey = "HKCU:\Software\Classes\CLSID\$OfficialClsid\InprocServer32"
+$shadow = (Get-ItemProperty -Path $shadowKey -Name "(default)" -ErrorAction SilentlyContinue)."(default)"
+if (-not $shadow) {
+    $problems += "the HKCU COM shadow registration is missing"
+    Write-Host "FAIL: HKCU 下没有官方 CLSID 的影子注册" -ForegroundColor Red
+} elseif (-not (Test-Path -LiteralPath $shadow)) {
+    $problems += "the HKCU COM shadow registration points at a missing file: $shadow"
+    Write-Host ("FAIL: COM 影子注册指向的文件不存在：{0}" -f $shadow) -ForegroundColor Red
+} else {
+    Write-Host ("PASS: COM 影子注册指向：{0}" -f $shadow) -ForegroundColor Green
+}
+
+# ── 3. 键盘布局 Preload 里的残留 ────────────────────────────────────────
 #
 # d001xxxx 是 TSF profile 专有的布局标记，只有注册 TIP 才会产生；
 # 0000xxxx 里没被用户语言列表用到的则是孤儿（语言装过又删了）。
@@ -168,7 +241,7 @@ if (Test-Path $preloadKey) {
     Write-Host ("    Preload 当前项: {0}" -f ($layouts -join ", ")) -ForegroundColor DarkGray
 }
 
-# ── 3. 机器级 profile ───────────────────────────────────────────────────
+# ── 4. 机器级 profile ───────────────────────────────────────────────────
 $hklmTip = "HKLM:\Software\Microsoft\CTF\TIP\$OfficialClsid\LanguageProfile"
 if (Test-Path $hklmTip) {
     $machineStale = @()
