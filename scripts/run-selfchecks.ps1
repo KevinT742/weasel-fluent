@@ -51,6 +51,11 @@ Invoke-Check 'lang-profile' {
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\verify-lang-profile.ps1')
 }
 
+# 语言栏图标：TIP DLL 资源段里的图标必须真的能渲染出来（存在 ≠ 能画）。
+Invoke-Check 'langbar-icons' {
+    powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\verify-langbar-icons.ps1')
+}
+
 # 语言栏 ↔ 服务端的端到端连通性（需要服务在跑，没跑就跳过）。
 Invoke-Check 'langbar-ipc' {
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\test_langbar_ipc.ps1')

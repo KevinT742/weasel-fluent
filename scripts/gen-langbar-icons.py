@@ -19,6 +19,16 @@
     langbar-reload.ico  IDI_RELOAD      重新加载：强调蓝 + 白色循环箭头（矢量绘制）
     langbar-app.ico     IDI_WEASEL      应用图标：中性深底 + 白「业」（沿用上游标记字形）
 
+另外还生成一张**纯字形**的图标：
+
+    langbar-profile.ico IDI_WEASEL      系统语言指示器：透明底 + 白「业」（TIP 侧用）
+
+    langbar-app.ico 与 langbar-profile.ico 字形相同、底不同：
+    前者是**应用自己的**图标（托盘、窗口标题栏）—— 圆角方块 + 深底，
+    在浅色任务栏上也看得见；后者是**系统画的**语言指示器 ——
+    放在一排系统图标中间，用纯字形才不显得像个没渲染出来的黑块
+    （微软拼音的「拼」就是纯字形）。
+
 每张都带 16/20/24/32/40/48/64/256 八种分辨率 —— 语言栏实际用的是
 `SM_CXSMICON`（16），但资源管理器大图标视图、任务栏缩放、登录界面都会用到更大尺寸。
 
@@ -110,6 +120,25 @@ def _reload_tile(color):
     return img
 
 
+def _plain_glyph(ch, font_path, scale=0.80, offset_y=0.0):
+    """**纯字形**：透明底 + 白色字形，不画圆角方块。
+
+    给「系统语言指示器」用 —— 任务栏里那个输入法图标是 Windows 自己画的，
+    放在一排系统图标中间。其它输入法（微软拼音的「拼」）用的都是纯字形，
+    带底的方块在那里会显得像个没渲染出来的黑块（用户 2026-11-22 的反馈
+    就是这个：托盘里只有一个近黑方块 + 白「业」）。
+
+    应用自己的图标（托盘、窗口标题栏）仍然是圆角方块 —— 那是应用的品牌，
+    不该为了迁就系统指示器而改掉。
+    """
+    img = Image.new("RGBA", (BASE, BASE), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    font = _font(font_path, int(BASE * scale))
+    d.text((BASE / 2, BASE / 2 + BASE * offset_y), ch, font=font,
+           fill=WHITE + (255,), anchor="mm")
+    return img
+
+
 def _save_ico(img, name):
     os.makedirs(OUT_DIR, exist_ok=True)
     path = os.path.join(OUT_DIR, name)
@@ -127,6 +156,9 @@ def build():
     outputs.append(_save_ico(_glyph_tile("半", NEUTRAL, FONT_CJK_BOLD), "langbar-half.ico"))
     outputs.append(_save_ico(_reload_tile(ACCENT), "langbar-reload.ico"))
     outputs.append(_save_ico(_glyph_tile("业", CHARCOAL, FONT_CJK_BOLD), "langbar-app.ico"))
+    # 系统语言指示器用的纯字形「业」（TIP 的 IDI_WEASEL → 注册表的 profile 图标）。
+    # 应用的托盘/标题栏图标仍然用 langbar-app.ico（圆角方块 + 深底）。
+    outputs.append(_save_ico(_plain_glyph("业", FONT_CJK_BOLD), "langbar-profile.ico"))
 
     for p in outputs:
         print("wrote", os.path.relpath(p, REPO))
@@ -140,7 +172,7 @@ def preview():
     """
     out = os.path.join(OUT_DIR, "_preview.png")
     names = ["langbar-zh", "langbar-en", "langbar-full",
-             "langbar-half", "langbar-reload", "langbar-app"]
+             "langbar-half", "langbar-reload", "langbar-app", "langbar-profile"]
     zoom = 3
     cell = 56 * zoom
     label_w = 130
