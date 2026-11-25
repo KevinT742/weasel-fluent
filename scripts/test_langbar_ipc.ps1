@@ -125,6 +125,15 @@ function Get-StatusFlag {
     return -1
 }
 
+# 从响应 body 里读预编辑串（body 形如 "ctx.preedit=ni hao\n…"）。
+# 没有组合态时这一行整个不存在 ⇒ 返回空串。
+function Get-Preedit {
+    param([string]$Body)
+    $m = [regex]::Match($Body, "ctx\.preedit=(.*)")
+    if ($m.Success) { return $m.Groups[1].Value.Trim() }
+    return ""
+}
+
 Write-Host "=== Language bar <-> server IPC end-to-end ===" -ForegroundColor Cyan
 
 $failures = 0
@@ -316,6 +325,60 @@ if ($beforeCombo -eq $afterCombo) {
     Write-Host ("FAIL: Shift+A wrongly switched the ascii mode ({0} -> {1})" -f $beforeCombo, $afterCombo) -ForegroundColor Red
     $failures++
 }
+
+# ── 9b. 组合态中按 Shift：中文组合态必须了结，英文才真的生效 ─────────────
+#
+# 这一条才是「Shift 切换中英文」的真正回归点（实测 2026-11-22）。
+#
+# 只切 ascii_mode 是不够的：librime 的 ascii_composer 在**组合态还在**的时候，
+# 会把后续按键 ctx->PushInput 进那个中文组合里，而不是放行给应用
+# （src/rime/gear/ascii_composer.cc 的 ProcessKeyEvent）。于是模式明明已经是
+# 英文，屏幕却还是一屏中文 —— 看起来就是「按 Shift 切不动中英」。
+#
+# 判据不能只看 ascii_mode（它在两种情况下都是 1），必须看**组合态**：
+#   1) 先打出「nihao」，确认引擎真的进了中文组合态（composing=1）；
+#   2) 单击 Shift；
+#   3) 再按一个字母 —— 若切换生效，这个字母必须**直接进宿主**，
+#      组合态既不该还在（composing=0），也不该被这个字母撑大（preedit 为空）。
+Send-Ipc -Msg $WEASEL_IPC_CLEAR_COMPOSITION -wParam 0 -lParam $sessionId | Out-Null
+Send-TrayCommand -MenuId $ID_WEASELTRAY_DISABLE_ASCII -SessionId $sessionId | Out-Null
+Start-Sleep -Milliseconds 300
+
+# 打出「nihao」；最后一条回包里就是组合态的证据。
+$last = $null
+foreach ($k in @(0x6E, 0x69, 0x68, 0x61, 0x6F)) {   # n i h a o
+    $last = Send-Ipc -Msg $WEASEL_IPC_PROCESS_KEY_EVENT -wParam $k -lParam $sessionId
+}
+$composingBefore = Get-StatusFlag -Body $last.Body -Name "composing"
+if ($composingBefore -ne 1) {
+    Write-Host "FAIL: could not build a Chinese composition before the Shift click (composing=$composingBefore)" -ForegroundColor Red
+    $failures++
+} else {
+    Write-Host "PASS: a Chinese composition is active (status.composing = 1)" -ForegroundColor Green
+}
+
+# 单击 Shift（按下 → 抬起，期间不按别的键）。
+Send-Ipc -Msg $WEASEL_IPC_PROCESS_KEY_EVENT -wParam $shiftDown -lParam $sessionId | Out-Null
+Send-Ipc -Msg $WEASEL_IPC_PROCESS_KEY_EVENT -wParam $shiftUp   -lParam $sessionId | Out-Null
+Start-Sleep -Milliseconds 400
+
+# 切换之后按一个字母：它必须直接进宿主，而不是被塞回中文组合。
+$after = Send-Ipc -Msg $WEASEL_IPC_PROCESS_KEY_EVENT -wParam $VKEY_A -lParam $sessionId
+$asciiAfter = Get-StatusFlag -Body $after.Body -Name "ascii_mode"
+$composingAfter = Get-StatusFlag -Body $after.Body -Name "composing"
+$preeditAfter = Get-Preedit -Body $after.Body
+if ($asciiAfter -eq 1 -and $composingAfter -eq 0 -and [string]::IsNullOrEmpty($preeditAfter)) {
+    Write-Host "PASS: the Shift click ended the Chinese composition and the next key went straight through" -ForegroundColor Green
+} else {
+    Write-Host ("FAIL: the Shift click left the Chinese composition alive (ascii_mode={0}, composing={1}, preedit='{2}')" -f $asciiAfter, $composingAfter, $preeditAfter) -ForegroundColor Red
+    $failures++
+}
+
+# 收尾：切回中文、清组合态，别给后面的用例留状态。
+Send-Ipc -Msg $WEASEL_IPC_PROCESS_KEY_EVENT -wParam $shiftDown -lParam $sessionId | Out-Null
+Send-Ipc -Msg $WEASEL_IPC_PROCESS_KEY_EVENT -wParam $shiftUp   -lParam $sessionId | Out-Null
+Send-Ipc -Msg $WEASEL_IPC_CLEAR_COMPOSITION -wParam 0 -lParam $sessionId | Out-Null
+Send-TrayCommand -MenuId $ID_WEASELTRAY_DISABLE_ASCII -SessionId $sessionId | Out-Null
 
 # ── 8. 我们自己注册的菜单命令也能命中 ─────────────────────────────────────
 #

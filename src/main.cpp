@@ -259,6 +259,20 @@ int runWeaselRuntimeProbe() {
             return 1;
         }
 
+        // 单击 Shift 必须把中文组合态**了结掉**。
+        //
+        // 不了结的话，librime 的 ascii_composer 在组合态还在的时候会把后续按键
+        // ctx->PushInput 回那个中文组合里（src/rime/gear/ascii_composer.cc 的
+        // ProcessKeyEvent），屏幕还是一屏中文 —— 表现就是「Shift 切不动中英」
+        // （实测 2026-11-25：真机 GUI 端到端，Shift 后的字母整个被中文组合吞掉）。
+        const RimeUiState afterSwitch = weasel.uiState();
+        if (afterSwitch.isComposing || !afterSwitch.candidates.isEmpty()) {
+            std::cerr << "FAIL: the Shift click left the Chinese composition alive"
+                      << " (composing=" << (afterSwitch.isComposing ? 1 : 0)
+                      << " candidates=" << afterSwitch.candidates.size() << ")\n";
+            return 1;
+        }
+
         // 再单击一次：切回中文。
         weasel.processKey(ibus::Shift_L, ibus::SHIFT_MASK);
         weasel.processKey(ibus::Shift_L, ibus::RELEASE_MASK);
@@ -294,6 +308,31 @@ int runWeaselRuntimeProbe() {
                      " (a clean click toggles, Shift+A does not).\n";
     }
 
+    // 桥接：同一个 Context/Status 映射出来的状态必须与引擎**此刻**的真实状态一致。
+    //
+    // ⚠️ 期望值必须取当下的快照，不能用上面那段留下的旧快照：单击 Shift 现在
+    // 会把中文组合态了结掉（这正是它该做的事 —— 见上面那条断言），
+    // 旧快照里的候选词自然对不上。
+    //
+    // 这里重新打一段拼音，让引擎回到有候选词的状态，再用**客户端收到的那份**
+    // 状态去对**桥接重新算出来的那份** —— 两条路径不同，才有比对的意义。
+    RimeUiState fresh;
+    for (QChar ch : QStringLiteral("nihao")) {
+        weasel.processChar(ch);
+    }
+    if (!waitForState(weasel, [&fresh](const RimeUiState& s) {
+            fresh = s;
+            return !s.candidates.isEmpty();
+        })) {
+        std::cerr << "FAIL: the engine produced no candidates for the bridge check\n";
+        return 1;
+    }
+    const RimeUiState bridged = FluentUiAdapter::toUiState(weasel.context(), weasel.status());
+    if (bridged.candidates.size() != fresh.candidates.size()) {
+        std::cerr << "FAIL: bridge mapping disagrees with the engine state\n";
+        return 1;
+    }
+
     // 全量部署（隔离目录里跑真实的 Rime 维护）。
     QString deployError;
     if (!weasel.deployFull(&deployError)) {
@@ -301,13 +340,6 @@ int runWeaselRuntimeProbe() {
         return 1;
     }
     std::cout << "  -> deployFull() OK\n";
-
-    // 桥接：同一个 Context/Status 映射出来的状态必须一致。
-    const RimeUiState bridged = FluentUiAdapter::toUiState(weasel.context(), weasel.status());
-    if (bridged.candidates.size() != st.candidates.size()) {
-        std::cerr << "FAIL: bridge mapping disagrees with the engine state\n";
-        return 1;
-    }
 
     // 中英模式也走同一条路：设 ascii_mode 之后 status().ascii_mode 要变。
     weasel.setAsciiMode(true);
