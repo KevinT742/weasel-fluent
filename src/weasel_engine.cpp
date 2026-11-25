@@ -321,10 +321,24 @@ public:
             keyEvent.mask & kIbusModifierBits,
             currentAscii,
             &desired);
-
         BOOL eaten = RimeWithWeaselHandler::ProcessKeyEvent(keyEvent, ipc_id, eat);
 
         if (toggle) {
+            // 切模式之前必须先把**组合态**了结掉，否则这次切换等于没切。
+            //
+            // 为什么：librime 的 ascii_composer 在**组合态还在**的时候，会把
+            // 后续按键 ctx->PushInput 进那个组合里，而不是放行给应用
+            // （src/rime/gear/ascii_composer.cc 的 ProcessKeyEvent）。
+            // 于是 ascii_mode 已经是 true，屏幕却还是一屏中文 —— 表现就是
+            // 「按 Shift 切不动中英」（实测 2026-11-22）。
+            //
+            // 组合态清掉之后，ascii_composer 走的是「直接放行」那条分支，
+            // 英文才真的能直接打进宿主。
+            //
+            // 顺序要紧：先清组合态，再置 ascii_mode。反过来的话，ascii_composer
+            // 的 inline_ascii 收尾逻辑（OnContextUpdate：组合态结束时把
+            // ascii_mode 改回 false）会在中间把模式又抹掉。
+            ClearComposition(ipc_id);
             // 上游的 SetOption 会顺手刷新 UI（状态与语言栏图标）。
             SetOption(ipc_id, "ascii_mode", desired);
         }
